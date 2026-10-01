@@ -2,8 +2,18 @@
 /// SMT-LIB 2 compliance examples for the LRA / LIA fragment.
 ///
 /// The examples are the standard textbook / tutorial scripts for quantifier-free linear
-/// arithmetic (the shapes used in the SMT-LIB tutorials from CMU 15-217 and the RWTH
-/// SMT-SynASC course, plus the canonical integrality-cut contrast between `Int` and `Real`).
+/// arithmetic, adopted from the public SMT-LIB teaching material:
+///   - CMU 15-217 "Using SMT solvers": the five-block QF_LIA script and the
+///     "integer x larger than y" shape (here written as `x = y + 2` so that the witness is
+///     exact in binary floating point).
+///   - RWTH SMT-SynASC course slides: `(assert (> (+ x y) 1))` with `(assert (= x (+ y 1)))`.
+///   - Avigad, "Using SMT solvers" (avigad.github.io/lamr): `(set-logic QF_LIA)` +
+///     `declare-const` + `assert` + `check-sat` + `get-model`, and the magic-square family of
+///     scripts.
+///   - smt-lib.org benchmark repository: the QF_LIA / QF_LRA logic split.
+/// On top of the borrowed shapes the suite adds the canonical integrality-cut contrast
+/// between `Int` and `Real` and two Boolean-plus-theory scripts that exercise the Tseitin
+/// layer in front of the theory solver.
 /// Each example is parsed by the in-tree SMT-LIB front-end, solved by the CDCL(T) solver,
 /// and checked against its expected verdict; the report prints `OK` / `MISMATCH` per case so
 /// a regression is visible instead of silently absorbed.

@@ -148,6 +148,25 @@ test "spoly_and_surjective_axiom_upper_bound_projection" {
   // Evaluate S(f, g) at (x_0 = 3, x_1 = 2): 3^2 - 2 = 7
   assert_eq(s.eval([3.0, 2.0]), 7.0)
 
+  // Multivariate division: reducing a polynomial by itself, and (x_0^2 - 1) by (x_0 - 1),
+  // both leave the zero polynomial in the ideal quotient.
+  assert_eq(reduce_poly_modulo_ideal(f, [f]).terms.length(), 0)
+  let xsq_minus_1 : MultivariatePoly = {
+    num_vars: 1,
+    terms: [
+      { coeff: 1.0, exponents: [2], },
+      { coeff: -1.0, exponents: [0], },
+    ],
+  }
+  let x_minus_1 : MultivariatePoly = {
+    num_vars: 1,
+    terms: [
+      { coeff: 1.0, exponents: [1], },
+      { coeff: -1.0, exponents: [0], },
+    ],
+  }
+  assert_eq(reduce_poly_modulo_ideal(xsq_minus_1, [x_minus_1]).terms.length(), 0)
+
   let proj = SurjectiveAxiomProjector::new()
   let projected_clauses = proj.project_upper_bound_clauses(
     [0.0, 4.0, 5.0, 9.0],

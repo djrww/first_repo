@@ -11,9 +11,10 @@
    - **VSIDS 分支啟發式 + 相位保存 (Phase Saving)**：變數活動度每衝突衰減 0.95、超過 1e100 自動重新縮放；GNN / SVM 負責平手排序同極性預測
    - **CDCL(T) 蘊含圖 / 衝突圖 (`ImplicationGraph`)**：逐步記錄決策同傳播節點，導出真實 **SVG** 圖（決策藍、傳播綠、衝突路徑紅），並且 1-UIP 分析由 OMT 引擎同獨立 CDCL(T) 求解器共用同一份實作
   - **LBD 認證 (`distinct_decision_levels`)**：每條學習子句嘅 LBD 都用學習當刻嘅 decision level 重新計算核對，唔會出現「寫入後冇人驗證」嘅統計值
-   - **獨立 CDCL(T) 求解器 (`CdcltSolver`) + SMT-LIB 2 前端 (`parse_smtlib`)**：由 `(set-logic QF_LIA)`、`(declare-const …)`、`(assert …)`、`(check-sat)`、`(get-model)` 腳本直接求解，並附 **LRA / LIA 合規示例**（教科書 / 教程常見腳本，逐題核對預期結果）
+   - **獨立 CDCL(T) 求解器 (`CdcltSolver`) + SMT-LIB 2 前端 (`parse_smtlib`)**：由 `(set-logic QF_LIA)`、`(declare-const …)`、`(assert …)`、`(check-sat)`、`(get-model)` 腳本直接求解，並附 **LRA / LIA 合規示例**（9 題，借鑒 CMU 15-217、RWTH SMT-SynASC、Avigad《Using SMT solvers》同 smt-lib.org 教學材料嘅腳本形狀，再補 Int/Real 整數性剪枝對照同 Boolean+theory 互動，逐題核對預期結果）
    - **內外半幺群雙層 CDN 解耦對映 QAP 指派子句 CNF**、**混合 6 動態下邊界增量離散剪枝**、**QAP 增量離散剪枝** 與 **增量最優解引理（記錄 incumbent 並加 blocking clause；唔係最小解釋）**
-   - **同態守恆理想** 與 **疊加協同窮舉上界歸因子句全射公理不變量約束投影**，並保留 **多項式理想歸約 (GrLex + S-多項式)** 代數層
+   - **同態守恆理想** 與 **疊加協同窮舉上界歸因子句全射公理不變量約束投影**（`HomomorphicConservationIdeal` / `SurjectiveAxiomProjector`，兩個求解器都用）
+   - 另有**獨立**多項式代數工具 `poly_ideal.mbt`（GrLex 歸約 `reduce_poly_modulo_ideal` + S-多項式 `compute_spoly`）：唔在求解主迴路，只作 API / 白盒測試驗證
    - 完整支援 **Lazy SMT + LRA (線性實數算術) + LIA (線性整數算術) + EUF (未解釋函數等詞)**
 
 2. **高性能向量增量拓撲與細粒度局部光柵渲染系統**
@@ -128,7 +129,7 @@ graph TD
 - **SMT-LIB 前端只覆蓋 QF_LRA / QF_LIA 片段**：`declare-fun`、未解釋函數、非線性乘法、陣列、量詞一律係硬錯誤或者跳過嘅命令；`unsupported_commands` 會列出跳過咗嘅命令。`get-model` 輸出係 `define-fun` 行，並非逐字節 SMT-LIB 標準模型格式。
 - **Dual-Layer CDN 對映 (`map_outer_to_inner`)** 係對外 API，由白盒測試驗證同態律；求解器主搜尋流程只寫入註冊表、冇讀返映射結果，因此唔影響搜尋路徑。
 - **BBF 快照係單進程內嘅求解器狀態副本**（union-find、界限、incumbent）；一致割檢查會驗證森林結構同比界非空，但唔係跨節點嘅分散式算法。
-- **渲染系統**：`RTree::update_primitive_aabb` 係 O(N) 全樹掃描（未維護 primitive→leaf 索引）；`SparseSpatialGrid::coord_to_tile` 保留 signed tile index（負座標唔會再夾入 tile 0；`morton_encode_2d` 只係將 hash 輸入夾到 0..16383，桶碰撞由 `(tile_x, tile_y)` 精確比對區分，所以查詢仍然 sound）；局部剔除取 R-tree ∩ 網格結果，網格只作 superset 過濾；頂點著色器嘅 `Affine2D` transform 目前只由白盒測試驅動，引擎未提供 setter。
+- **渲染系統**：`RTree::update_primitive_aabb` 係 O(N) 全樹掃描（未維護 primitive→leaf 索引）；`SparseSpatialGrid::coord_to_tile` 保留 signed tile index（負座標唔會再夾入 tile 0；`morton_encode_2d` 只係將 hash 輸入夾到 0..(2^`morton_coord_bits` − 1)（預設 16383），桶碰撞由 `(tile_x, tile_y)` 精確比對區分，所以查詢仍然 sound）；局部剔除取 R-tree ∩ 網格結果，網格只作 superset 過濾；頂點著色器嘅 `Affine2D` transform 目前只由白盒測試驅動，引擎未提供 setter。
 
 ---
 
