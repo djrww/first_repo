@@ -1,6 +1,7 @@
 ///|
 /// Whitebox Unit Tests for Internal Invariants, Semigroup/Monoid Laws,
-/// HPA *Closure, Kleisli Unification, OMT-GNN, SVM Kernels, LRB, QAP, and CAC Ideal Reduction.
+/// HPA *Closure, Kleisli Unification, OMT-GNN, SVM Kernels, VSIDS, QAP, the implication
+/// graph and the polynomial / ideal-reduction algebra.
 
 ///|
 test "outer_monoid_and_inner_semigroup_cdn_homomorphism" {
@@ -67,8 +68,8 @@ test "omt_gnn_and_svm_rkhs_kernel_mapping" {
   let weights : Array[Double] = [0.0, 5.0, 1.0, 2.0]
   let gnn = OmtGnn::new(3, [c1, c2], weights)
   gnn.add_euf_congruence_edge(1, 2)
-  let lrb_scores : Array[Double] = [0.0, 0.4, 0.2, 0.3]
-  gnn.forward_message_passing([c1, c2], lrb_scores, 3)
+  let activity_scores : Array[Double] = [0.0, 0.4, 0.2, 0.3]
+  gnn.forward_message_passing([c1, c2], activity_scores, 3)
 
   let svm = SvmKernelMapper::new(HybridOmtEuf(0.5, 0.3), 1.0)
   svm.fit_online_sample(gnn.var_embeddings[1], -1.0)
@@ -81,16 +82,29 @@ test "omt_gnn_and_svm_rkhs_kernel_mapping" {
 }
 
 ///|
-test "lrb_erwa_reason_side_locality_and_hybrid6_bounds" {
-  let lrb = LrbBrancher::new(4)
-  lrb.on_assign(1, true)
-  lrb.on_assign(2, false)
-  let vals : Array[TruthVal] = [Unassigned, True, False, Unassigned, Unassigned]
-  lrb.on_conflict([1], [2], vals)
-  lrb.on_unassign(1)
-  lrb.on_unassign(2)
-  assert_true(lrb.ema_lr[1] > 0.15)
-  assert_true(lrb.ema_lr[3] < 0.15) // decayed by 0.95 locality factor
+test "vsids_activity_decay_phase_saving_and_hybrid6_bounds" {
+  let vsids = VsidsOracle::new(4)
+  assert_eq(vsids.activity_of(1), 0.0)
+  assert_eq(vsids.is_phase_known(1), false)
+  vsids.on_assign(1, true)
+  assert_eq(vsids.is_phase_known(1), true)
+  assert_eq(vsids.saved_phase_of(1), true)
+  vsids.on_conflict([1, 2])
+  // Bumped by the decayed increment (1.0 / 0.95 > 1.0); non-participants stay at 0.
+  assert_true(vsids.activity_of(1) > vsids_var_inc_initial)
+  assert_true(vsids.activity_of(2) > vsids_var_inc_initial)
+  assert_eq(vsids.activity_of(3), 0.0)
+  assert_true(vsids.var_inc > vsids_var_inc_initial)
+  // The highest-activity unassigned variable is selected (variable 1 is already assigned).
+  let vals : Array[TruthVal] = [Unassigned, True, Unassigned, Unassigned, Unassigned]
+  assert_eq(vsids.select_branch_var(vals).unwrap(), 2)
+  // Normalised activities are the GNN feature and stay inside [0, 1].
+  let norm = vsids.normalized_activity_scores()
+  assert_eq(norm[2], 1.0)
+  assert_true(norm[3] >= 0.0 && norm[3] <= 1.0)
+  // Explicit phase hints (used by the OMT incumbent and the optimality lemma engine).
+  vsids.hint_phase(3, true)
+  assert_eq(vsids.saved_phase_of(3), true)
 
   let h6 = Hybrid6DynamicLowerBound::new()
   let gnn = OmtGnn::new(4, [], [0.0, 2.0, 3.0, 1.0, 4.0])
@@ -144,11 +158,67 @@ test "spoly_and_surjective_axiom_upper_bound_projection" {
   assert_eq(projected_clauses.length(), 2)
   assert_eq(proj.upper_bound_projections, 2)
   // The per-category coverage counters are now readable, and every projected clause is
-  // certified exactly once (all of them carry AxiomOrigin::LrbOptimalLemma).
+  // certified exactly once (all of them carry AxiomOrigin::OptimalBoundLemma).
   let coverage = proj.schema_coverage_report()
-  assert_eq(coverage.length(), 9)
-  assert_eq(coverage[8], 2) // LrbOptimalLemma category
+  assert_eq(coverage.length(), 8)
+  assert_eq(coverage[7], 2) // OptimalBoundLemma category
   assert_eq(proj.certified_clause_count(), 2)
+}
+
+///|
+test "shared_1uip_analysis_returns_asserting_literal_and_backtrack_level" {
+  // c0 = (1 v 2) is the reason for literal 2 at level 1; c1 = (-2) is the conflict.
+  let c0 = Clause::new(0, [1, 2], false, 2, ProblemInput)
+  let c1 = Clause::new(1, [-2], false, 1, ProblemInput)
+  let clauses = [c0, c1]
+  let trail : Array[Int] = [-1, 2]
+  let var_level : Array[Int] = [0, 1, 1]
+  let var_reason : Array[Int] = [0, -1, 0]
+  let (learnt, bt_level, lbd, participating, reason_vars) = analyze_conflict_1uip_from_trail(
+    2, 1, trail, var_level, var_reason, clauses, [-2],
+  )
+  // The single current-level literal of the conflict is its own first UIP.
+  assert_eq(learnt.length(), 1)
+  assert_eq(learnt[0], -2)
+  assert_eq(bt_level, 0)
+  assert_eq(lbd, 1)
+  assert_eq(participating.length(), 1)
+  assert_eq(participating[0], 2)
+  assert_eq(reason_vars.length(), 0)
+}
+
+///|
+test "distinct_decision_levels_certifies_clause_lbd" {
+  let var_level : Array[Int] = [0, 3, 3, 1, 2]
+  assert_eq(distinct_decision_levels([-2, -3], var_level), 2)
+  assert_eq(distinct_decision_levels([2, -2], var_level), 1)
+  assert_eq(distinct_decision_levels([1, -2, -3], var_level), 2)
+  assert_eq(distinct_decision_levels([1], var_level), 1)
+  assert_eq(distinct_decision_levels([], var_level), 1)
+}
+
+///|
+test "implication_graph_records_and_verifies_a_conflict" {
+  let graph = ImplicationGraph::new(3)
+  // var 1 = True (decision), var 2 = False (implied by c0 = (-1 v -2) as -2 = not 1 ...):
+  // the assigned literals are 1 and -2, so the reason clause literal -1 must be looked up
+  // through its negation (1).
+  let c0 = Clause::new(0, [-1, -2], false, 2, ProblemInput)
+  let _ = graph.record_decision(1, 1)
+  let _ = graph.record_implication(-2, 1, 0, [1])
+  assert_eq(graph.node_of(1) >= 0, true)
+  assert_eq(graph.node_of(-2) >= 0, true)
+  // Conflict clause c1 = (2) is falsified by -2; it is justified by the node of -2.
+  let values : Array[TruthVal] = [Unassigned, True, False, Unassigned]
+  graph.record_conflict([2])
+  assert_eq(graph.all_lits_justified([2], values), true)
+  assert_eq(graph.all_lits_justified([1], values), false)
+  assert_eq(graph.verify(), true)
+  assert_eq(graph.decisions, 1)
+  assert_eq(graph.implications, 1)
+  let svg = graph.to_svg()
+  assert_true(svg.contains("<svg"))
+  assert_true(svg.contains("CDCL(T) implication graph"))
 }
 
 ///|

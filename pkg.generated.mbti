@@ -6,7 +6,13 @@ import {
 }
 
 // Values
+pub fn analyze_conflict_1uip_from_trail(Int, Int, Array[Int], Array[Int], Array[Int], Array[Clause], Array[Int]) -> (Array[Int], Int, Int, Array[Int], Array[Int])
+
 pub fn blend_src_over(ColorRgba, ColorRgba) -> ColorRgba
+
+pub fn distinct_decision_levels(Array[Int], Array[Int]) -> Int
+
+pub fn conflict_graph_script() -> String
 
 pub fn compare_exponents_grlex(Array[Int], Array[Int]) -> Int
 
@@ -38,6 +44,8 @@ pub fn lit_var(Int) -> Int
 
 pub fn mk_lit(Int, Bool) -> Int
 
+pub fn parse_smtlib(String) -> SmtProblem?
+
 pub fn morton_encode_2d(Int, Int) -> Int
 
 pub fn outer_monoid_compose(OuterMonoidElem, OuterMonoidElem) -> OuterMonoidElem
@@ -46,9 +54,11 @@ pub fn poly_subtract_scaled_shifted(MultivariatePoly, MultivariatePoly, Double, 
 
 pub fn push_unique(Array[Int], Int) -> Unit
 
-pub fn reduce_poly_modulo_ideal(MultivariatePoly, Array[MultivariatePoly]) -> MultivariatePoly
+pub fn run_conflict_graph_scenario() -> (String, String)
 
-pub fn run_cac_ideal_and_conservation_scenario() -> (Double, Bool, Bool, Int)
+pub fn run_lra_lia_compliance_scenario() -> String
+
+pub fn reduce_poly_modulo_ideal(MultivariatePoly, Array[MultivariatePoly]) -> MultivariatePoly
 
 pub fn run_incremental_rendering_system_scenario() -> (FrameRenderMetrics, FrameRenderMetrics, Int, Int)
 
@@ -56,11 +66,13 @@ pub fn run_lazy_smt_lra_lia_euf_omt_scenario() -> OmtSolveResult
 
 pub fn run_lra_vs_lia_integrality_cut_scenario() -> OmtSolveResult
 
-pub fn run_qap_lrb_hybrid6_scenario() -> OmtSolveResult
+pub fn run_qap_hybrid6_scenario() -> OmtSolveResult
 
 pub fn sdf_smoothstep(Double, Double, Double) -> Double
 
 pub fn simplify_stroke_rdp(Array[Vec2], Double) -> Array[Vec2]
+
+pub fn solve_smtlib_text(String, Int) -> CdcltResult?
 
 // Errors
 
@@ -92,7 +104,7 @@ pub(all) struct AdaptiveOptimalLemmaEngine {
   generated_lemmas : Array[Clause]
 }
 pub fn AdaptiveOptimalLemmaEngine::new(Int) -> Self
-pub fn AdaptiveOptimalLemmaEngine::record_incumbent_and_synthesize_lemma(Self, Array[TruthVal], Array[Double], Array[Double], Double, LrbBrancher, Int) -> Clause?
+pub fn AdaptiveOptimalLemmaEngine::record_incumbent_and_synthesize_lemma(Self, Array[TruthVal], Array[Double], Array[Double], Double, Int) -> Clause?
 
 pub(all) struct Affine2D {
   m00 : Double
@@ -122,8 +134,7 @@ pub(all) enum AxiomOrigin {
   LraFarkasAxiom(Int)
   LiaIntegralityCut(Int)
   QapDiscretePruneAxiom(Int)
-  CacIdealReductionAxiom(Int)
-  LrbOptimalLemma(Int)
+  OptimalBoundLemma(Int)
 } derive(Eq)
 pub fn AxiomOrigin::equal(Self, Self) -> Bool
 pub fn AxiomOrigin::not_equal(Self, Self) -> Bool
@@ -158,6 +169,65 @@ pub fn BbfSnapshotManager::capture_snapshot(Self, Int, Int, HpaCongruenceClosure
 pub fn BbfSnapshotManager::new() -> Self
 pub fn BbfSnapshotManager::record_channel_message(Self, Int, Int, Int, Double) -> Unit
 pub fn BbfSnapshotManager::restore_to_level(Self, Int, HpaCongruenceClosure, Array[Double], Array[Double]) -> BbfDistributedSnapshot?
+pub(all) struct CdcltResult {
+  satisfiable : Bool
+  unknown : Bool
+  model : Array[TruthVal]
+  arith_model : Array[Double]
+  conflicts : Int
+  decisions : Int
+  propagations : Int
+  input_clauses : Int
+  learnt_clauses : Int
+  theory_conflicts : Int
+  graph_nodes : Int
+  graph_violations : Int
+  learnt_clause_failures : Int
+  lbd_certification_failures : Int
+  uncertified_models : Int
+  model_text : String
+  graph_svg : String
+}
+pub(all) struct CdcltSolver {
+  problem : SmtProblem
+  num_vars : Int
+  clauses : Array[Clause]
+  values : Array[TruthVal]
+  trail : Array[Int]
+  trail_lim : Array[Int]
+  var_level : Array[Int]
+  var_reason : Array[Int]
+  vsids : VsidsOracle
+  graph : ImplicationGraph
+  theory : LraLiaTheorySolver
+  projector : SurjectiveAxiomProjector
+  conservation : HomomorphicConservationIdeal
+  mut conflicts : Int
+  mut decisions : Int
+  mut propagations : Int
+  mut theory_conflicts : Int
+  mut uncertified_models : Int
+  mut learnt_invariant_failures : Int
+  mut lbd_certification_failures : Int
+  mut axiom_certification_failures : Int
+  mut budget_exhausted : Bool
+  mut unknown : Bool
+  mut found_model : Bool
+}
+pub fn CdcltSolver::add_clause_checked(Self, Array[Int], Bool, AxiomOrigin) -> Int
+pub fn CdcltSolver::backjump(Self, Int) -> Unit
+pub fn CdcltSolver::bcp_propagate(Self) -> Int?
+pub fn CdcltSolver::decision_level(Self) -> Int
+pub fn CdcltSolver::enqueue_lit(Self, Int, Int) -> Bool
+pub fn CdcltSolver::from_problem(SmtProblem) -> Self
+pub fn CdcltSolver::handle_conflict(Self, Clause) -> Bool
+pub fn CdcltSolver::model_text(Self) -> String
+pub fn CdcltSolver::solve(Self, Int) -> CdcltResult
+pub fn CdcltSolver::theory_check(Self) -> Clause?
+
+
+
+
 
 pub(all) struct Clause {
   id : Int
@@ -180,18 +250,15 @@ pub fn ColorRgba::equal(Self, Self) -> Bool
 pub fn ColorRgba::lerp(Self, Self, Double) -> Self
 pub fn ColorRgba::new(Double, Double, Double, Double) -> Self
 pub fn ColorRgba::not_equal(Self, Self) -> Bool
-
-pub(all) struct CylindricalAlgebraicCovering {
-  num_arith_vars : Int
-  ideal_generators : Array[MultivariatePoly]
-  active_constraints : Array[(MultivariatePoly, ArithOp, Double, Int)]
-  mut ideal_reductions_count : Int
-  mut cac_pruned_cells : Int
+pub(all) struct ConflictNode {
+  lit : Int
+  level : Int
+  reason_clause : Int
+  antecedents : Array[Int]
+  mut on_conflict_path : Bool
 }
-pub fn CylindricalAlgebraicCovering::add_constraint(Self, MultivariatePoly, ArithOp, Double, Int) -> Unit
-pub fn CylindricalAlgebraicCovering::add_ideal_generator(Self, MultivariatePoly) -> Unit
-pub fn CylindricalAlgebraicCovering::check_cylindrical_covering(Self, Array[Double], Array[Double], Array[Double], Array[Array[Int]], Array[Array[Int]], Int) -> Clause?
-pub fn CylindricalAlgebraicCovering::new(Int) -> Self
+
+
 
 pub(all) struct DirtyRectTracker {
   viewport_width : Double
@@ -343,6 +410,28 @@ pub(all) struct Hybrid6DynamicLowerBound {
 pub fn Hybrid6DynamicLowerBound::new() -> Self
 pub fn Hybrid6DynamicLowerBound::should_prune(Self, Double) -> Bool
 pub fn Hybrid6DynamicLowerBound::update_and_fuse(Self, Array[TruthVal], Array[Double], Array[Double], Array[Double], Array[Double], Array[Bool], Double, Array[(Int, Int)], OmtGnn, SvmKernelMapper) -> Double
+pub(all) struct ImplicationGraph {
+  num_vars : Int
+  nodes : Array[ConflictNode]
+  lit_slot : Array[Int]
+  mut decisions : Int
+  mut implications : Int
+  mut conflicts_recorded : Int
+  mut violations : Int
+  mut last_violation : String
+  mut last_conflict_lits : Array[Int]
+}
+pub fn ImplicationGraph::all_lits_justified(Self, Array[Int], Array[TruthVal]) -> Bool
+pub fn ImplicationGraph::clear(Self) -> Unit
+pub fn ImplicationGraph::new(Int) -> Self
+pub fn ImplicationGraph::node_of(Self, Int) -> Int
+pub fn ImplicationGraph::record_conflict(Self, Array[Int]) -> Unit
+pub fn ImplicationGraph::record_decision(Self, Int, Int) -> Int
+pub fn ImplicationGraph::record_implication(Self, Int, Int, Int, Array[Int]) -> Int
+pub fn ImplicationGraph::to_svg(Self) -> String
+pub fn ImplicationGraph::verify(Self) -> Bool
+
+
 
 pub(all) struct IncrementalRenderEngine {
   width : Int
@@ -405,19 +494,21 @@ pub(all) struct LazySmtOmtSolver {
   bbf : BbfSnapshotManager
   gnn : OmtGnn
   svm : SvmKernelMapper
-  lrb : LrbBrancher
+  vsids : VsidsOracle
+  graph : ImplicationGraph
   hybrid6 : Hybrid6DynamicLowerBound
   mut qap : QapIncrementalPruner
   mut learnt_invariant_failures : Int
   mut uncertified_witness_rejections : Int
   mut axiom_certification_failures : Int
+  mut lbd_certification_failures : Int
   opt_lemma_engine : AdaptiveOptimalLemmaEngine
-  cac : CylindricalAlgebraicCovering
   conservation_ideal : HomomorphicConservationIdeal
   axiom_projector : SurjectiveAxiomProjector
   lra_lia : LraLiaTheorySolver
   mut total_decisions : Int
   mut total_propagations : Int
+  mut total_conflicts : Int
 }
 pub fn LazySmtOmtSolver::add_clause(Self, Array[Int], Bool, AxiomOrigin) -> Int
 pub fn LazySmtOmtSolver::add_clause_with_lbd(Self, Array[Int], Bool, Int, AxiomOrigin) -> Int
@@ -429,7 +520,9 @@ pub fn LazySmtOmtSolver::bcp_propagate(Self) -> Int?
 pub fn LazySmtOmtSolver::check_lazy_theories(Self) -> Clause?
 pub fn LazySmtOmtSolver::decision_level(Self) -> Int
 pub fn LazySmtOmtSolver::evaluate_total_objective(Self) -> Double
+pub fn LazySmtOmtSolver::hint_optimal_phases(Self) -> Unit
 pub fn LazySmtOmtSolver::new(Int, Int, Array[Bool], Array[Double], Array[Double]) -> Self
+pub fn LazySmtOmtSolver::select_branch_literal_vsids(Self) -> Int?
 pub fn LazySmtOmtSolver::solve_omt(Self, Int) -> OmtSolveResult
 
 pub(all) struct LinearTerm {
@@ -461,23 +554,6 @@ pub fn LraLiaTheorySolver::is_witness_certified(Self, Array[TruthVal]) -> Bool
 pub fn LraLiaTheorySolver::new(Int, Array[Bool]) -> Self
 pub fn LraLiaTheorySolver::propagate_and_check(Self, Array[TruthVal], Array[Double], Int) -> Clause?
 pub fn LraLiaTheorySolver::set_var_domain(Self, Int, Double, Double) -> Unit
-
-pub(all) struct LrbBrancher {
-  num_vars : Int
-  mut alpha : Double
-  mut total_conflicts : Int
-  ema_lr : Array[Double]
-  assigned_at : Array[Int]
-  participated : Array[Int]
-  reason_side : Array[Int]
-  saved_phase : Array[Bool]
-  phase_valid : Array[Bool]
-}
-pub fn LrbBrancher::new(Int) -> Self
-pub fn LrbBrancher::on_assign(Self, Int, Bool) -> Unit
-pub fn LrbBrancher::on_conflict(Self, Array[Int], Array[Int], Array[TruthVal]) -> Unit
-pub fn LrbBrancher::on_unassign(Self, Int) -> Unit
-pub fn LrbBrancher::select_branch_literal(Self, Array[TruthVal], OmtGnn, SvmKernelMapper) -> Int?
 
 pub(all) struct MultivariatePoly {
   num_vars : Int
@@ -515,7 +591,11 @@ pub(all) struct OmtSolveResult {
   euf_congruence_classes : Int
   bbf_snapshots_taken : Int
   bbf_restorations : Int
-  cac_ideal_reductions : Int
+  lbd_certification_failures : Int
+  graph_decision_nodes : Int
+  graph_implication_nodes : Int
+  graph_violations : Int
+  vsids_rescalings : Int
   conservation_ideal_verified : Bool
   surjective_axiom_certified_clauses : Int
   axiom_certification_failures : Int
@@ -619,6 +699,54 @@ pub(all) struct SdfTextureAtlas {
 }
 pub fn SdfTextureAtlas::bake_from_shapes(Int, Int, Array[SdfShapeKind]) -> Self
 pub fn SdfTextureAtlas::sample_bilinear(Self, Double, Double) -> Double
+pub(all) struct SmtAtom {
+  guard : Int
+  term : LinearTerm
+  op : ArithOp
+  rhs : Double
+  is_lia : Bool
+}
+pub(all) struct SmtDecl {
+  name : String
+  sort : SmtSort
+  bool_var : Int
+  arith_index : Int
+}
+pub(all) enum SmtExpr {
+  SmtBoolLit(Bool)
+  SmtNumLit(Double)
+  SmtSymRef(Int)
+  SmtApply(String, Array[SmtExpr])
+}
+pub(all) struct SmtProblem {
+  logic : String
+  decls : Array[SmtDecl]
+  num_bool_vars : Int
+  num_arith_vars : Int
+  is_integer : Array[Bool]
+  assertions : Array[SmtExpr]
+  unsupported_commands : Array[String]
+  parse_errors : Array[String]
+}
+pub fn SmtProblem::decl_names(Self) -> Array[String]
+pub fn SmtProblem::summary(Self) -> String
+pub(all) enum SmtSort {
+  BoolSort
+  IntSort
+  RealSort
+} derive(Eq)
+pub fn SmtSort::equal(Self, Self) -> Bool
+pub fn SmtSort::not_equal(Self, Self) -> Bool
+
+
+
+
+
+
+
+
+
+
 
 pub(all) struct SparseSpatialGrid {
   tile_size : Double
@@ -696,20 +824,10 @@ pub fn SvmKernelMapper::with_capacity(SvmKernelKind, Double, Int) -> Self
 
 pub(all) enum Term {
   Var(String, Int)
-  IntConst(Int)
-  RealConst(Double)
   App(String, Array[Int])
 } derive(Eq)
 pub fn Term::equal(Self, Self) -> Bool
 pub fn Term::not_equal(Self, Self) -> Bool
-
-pub(all) enum TheoryAtom {
-  EufEq(Int, Int)
-  EufNeq(Int, Int)
-  LraConstraint(LinearTerm, ArithOp, Double)
-  LiaConstraint(LinearTerm, ArithOp, Int)
-  PolyConstraint(Int, ArithOp, Double)
-}
 
 pub(all) struct TopoFace {
   id : Int
@@ -761,7 +879,6 @@ pub(all) struct VectorTopologyGraph {
   mut incremental_splits : Int
 }
 pub fn VectorTopologyGraph::active_undirected_edge_count(Self) -> Int
-pub fn VectorTopologyGraph::euler_characteristic(Self) -> Int
 pub fn VectorTopologyGraph::insert_segment_incremental(Self, Vec2, Vec2, Int) -> Int
 pub fn VectorTopologyGraph::move_vertex_incremental(Self, Int, Vec2) -> Array[Int]
 pub fn VectorTopologyGraph::new(Double) -> Self
@@ -789,6 +906,27 @@ pub fn FlatVertexArena::compute_slice_aabb(Self, ArenaBufferSlice) -> Aabb
 pub fn FlatVertexArena::new() -> Self
 pub fn FlatVertexArena::read_global_vertex(Self, Int) -> GpuVertex
 pub fn FlatVertexArena::translate_slice_in_place(Self, ArenaBufferSlice, Double, Double) -> ArenaBufferSlice
+pub(all) struct VsidsOracle {
+  num_vars : Int
+  mut var_inc : Double
+  activity : Array[Double]
+  mut conflicts : Int
+  mut rescalings : Int
+  saved_phase : Array[Bool]
+  phase_valid : Array[Bool]
+}
+pub fn VsidsOracle::activity_of(Self, Int) -> Double
+pub fn VsidsOracle::activity_scores(Self) -> Array[Double]
+pub fn VsidsOracle::hint_phase(Self, Int, Bool) -> Unit
+pub fn VsidsOracle::is_phase_known(Self, Int) -> Bool
+pub fn VsidsOracle::new(Int) -> Self
+pub fn VsidsOracle::normalized_activity_scores(Self) -> Array[Double]
+pub fn VsidsOracle::on_assign(Self, Int, Bool) -> Unit
+pub fn VsidsOracle::on_conflict(Self, Array[Int]) -> Unit
+pub fn VsidsOracle::saved_phase_of(Self, Int) -> Bool
+pub fn VsidsOracle::select_branch_var(Self, Array[TruthVal]) -> Int?
+
+
 
 // Type aliases
 

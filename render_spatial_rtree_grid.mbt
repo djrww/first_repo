@@ -331,13 +331,14 @@ pub fn RTree::query_aabb(self : RTree, query_box : Aabb) -> Array[Int] {
 }
 
 ///|
-/// Interleave the lower 14 bits of `tx` and `ty` (each clamped to 0..16383) into a
-/// 28-bit Morton Z-order curve code.
+/// Interleave the lower `morton_coord_bits` bits of `tx` and `ty` (each clamped to the
+/// representable coordinate range) into a Morton Z-order curve code.
 pub fn morton_encode_2d(tx : Int, ty : Int) -> Int {
-  let ux = tx.clamp(min=0, max=16383)
-  let uy = ty.clamp(min=0, max=16383)
+  let max_coord = (1 << morton_coord_bits) - 1
+  let ux = tx.clamp(min=0, max=max_coord)
+  let uy = ty.clamp(min=0, max=max_coord)
   let mut code = 0
-  for bit = 0; bit < 14; bit = bit + 1 {
+  for bit = 0; bit < morton_coord_bits; bit = bit + 1 {
     let bx = (ux >> bit) & 1
     let by = (uy >> bit) & 1
     code = code | (bx << (2 * bit)) | (by << (2 * bit + 1))
@@ -799,7 +800,7 @@ pub fn DirtyRectTracker::mark_dirty_aabb(
   }
   match region.intersection(viewport) {
     Some(clipped) =>
-      if clipped.area() > 1.0e-6 {
+      if clipped.area() > tol_eps_mesh {
         self.raw_dirty_rects.push(clipped)
       }
     None => ()

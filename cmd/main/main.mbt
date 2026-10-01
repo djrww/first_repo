@@ -1,6 +1,6 @@
 ///|
 /// Main CLI Runner for the Self-Developed OMT + GNN + SVM + HPA *Closure +
-/// Kleisli + BBF + LRB + Hybrid-6 + QAP + CAC + CDCL(T) Lazy SMT Solver.
+/// Kleisli + BBF + VSIDS + Conflict Graph + Hybrid-6 + QAP + CDCL(T) Solver.
 fn main {
   println(
     "================================================================================",
@@ -33,6 +33,13 @@ fn main {
     "    - BBF Distributed Snapshots/Rest.: \{res1.bbf_snapshots_taken} / \{res1.bbf_restorations}",
   )
   println(
+    "    - Implication Graph Nodes        : \{res1.graph_decision_nodes} decisions / \{res1.graph_implication_nodes} implied (violations: \{res1.graph_violations})",
+  )
+  println("    - VSIDS Activity Rescalings      : \{res1.vsids_rescalings}")
+  println(
+    "    - LBD Certification Failures     : \{res1.lbd_certification_failures}",
+  )
+  println(
     "    - Conservation Ideal Verified    : \{res1.conservation_ideal_verified}",
   )
   println("    - Surjective Axiom Clauses Cert. : \{res1.surjective_axiom_certified_clauses}")
@@ -47,10 +54,10 @@ fn main {
     "    - Axiom Schema Coverage          : \{covered_categories} / \{res1.axiom_schema_coverage.length()} categories",
   )
 
-  // 2. Run Scenario 2: QAP Incremental Discrete Pruning + Dual-Layer CDN + LRB Hybrid-6
-  let res2 = @lib.run_qap_lrb_hybrid6_scenario()
+  // 2. Run Scenario 2: QAP Incremental Discrete Pruning + Dual-Layer CDN + Hybrid-6
+  let res2 = @lib.run_qap_hybrid6_scenario()
   println(
-    "\n[2] Inner-Outer Semigroup Dual-Layer CDN + QAP Incremental Discrete Pruning + LRB Hybrid-6:",
+    "\n[2] Inner-Outer Semigroup Dual-Layer CDN + QAP Incremental Discrete Pruning + Hybrid-6:",
   )
   println("    - Satisfiable                    : \{res2.satisfiable}")
   println("    - Optimal 3x3 QAP Objective      : \{res2.optimal_objective}")
@@ -66,19 +73,23 @@ fn main {
     "    - Surjective Axiom Clauses Cert. : \{res2.surjective_axiom_certified_clauses}",
   )
 
-  // 3. Run Scenario 3: Ring-Lifted CAC Ideal Reduction & Conservation Invariant
-  let (reduced_val, cac_infeasible, conserved, reductions) = @lib.run_cac_ideal_and_conservation_scenario()
+  // 3. Run the SMT-LIB 2 LRA / LIA compliance examples through the CDCL(T) solver
   println(
-    "\n[3] Ring-Lifted Cylindrical Algebraic Covering (CAC) Ideal Reduction & Homomorphic Ideal:",
+    "\n[3] SMT-LIB 2 Compliance Examples (LRA / LIA) via the in-tree front-end + CDCL(T) solver:",
   )
-  println("    - Polynomial f mod <g1, g2> Val  : \{reduced_val}")
-  println("    - CAC Fiber Covering Conflict    : \{cac_infeasible}")
-  println("    - Ideal Reductions Executed      : \{reductions}")
-  println("    - Resolution Ideal Conservation  : \{conserved}")
+  println(@lib.run_lra_lia_compliance_scenario())
 
-  // 4. Run Scenario 4: LRA vs. LIA Integrality Cut Separation + OMT
+  // 4. Run the implication / conflict graph scenario and emit its SVG export
+  let (graph_report, graph_svg) = @lib.run_conflict_graph_scenario()
+  println("\n[4] CDCL(T) Implication / Conflict Graph:")
+  println(graph_report)
+  println("----- BEGIN CONFLICT GRAPH SVG -----")
+  println(graph_svg)
+  println("----- END CONFLICT GRAPH SVG -----")
+
+  // 5. Run Scenario 4: LRA vs. LIA Integrality Cut Separation + OMT
   let res4 = @lib.run_lra_vs_lia_integrality_cut_scenario()
-  println("\n[4] Lazy SMT + LRA vs. LIA Integrality Cut Separation + OMT:")
+  println("\n[5] Lazy SMT + LRA vs. LIA Integrality Cut Separation + OMT:")
   println("    - Satisfiable                    : \{res4.satisfiable}")
   println("    - Optimal LIA Objective Value    : \{res4.optimal_objective}")
   println("    - Optimal Integer Witness (x0)   : \{res4.best_arith_model[0]}")
@@ -86,10 +97,10 @@ fn main {
     "    - Conservation Ideal Verified    : \{res4.conservation_ideal_verified}",
   )
 
-  // 5. Run Scenario 5: Vector & Incremental Raster Rendering System
+  // 6. Run Scenario 5: Vector & Incremental Raster Rendering System
   let (f1, f2, topo_splits, sdf_samples) = @lib.run_incremental_rendering_system_scenario()
   println(
-    "\n[5] Vector & Incremental Raster Rendering System (Full vs. Incremental Frame):",
+    "\n[6] Vector & Incremental Raster Rendering System (Full vs. Incremental Frame):",
   )
   println(
     "    - Topology Vertices / Half-Edges : \{f2.topology_vertices} / \{f2.topology_half_edges} (Auto-Splits: \{topo_splits})",
@@ -115,6 +126,6 @@ fn main {
   )
   println("    - SDF Bilinear Texture Samples   : \{sdf_samples}")
   println(
-    "================================================================================",
+    "================================================================================\n",
   )
 }

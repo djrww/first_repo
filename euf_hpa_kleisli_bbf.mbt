@@ -402,12 +402,6 @@ pub fn KleisliUnificationGraph::unify_kleisli(
       self.hpa.assert_eq(u2, u1, reason_lit)
       None
     }
-    (IntConst(c1), IntConst(c2)) =>
-      if c1 != c2 {
-        Some([lit_neg(reason_lit)])
-      } else {
-        None
-      }
     (App(_, _), App(_, _)) => {
       // `Term::App` names an *uninterpreted* function symbol, so f(a) = f(b) does not imply
       // a = b: decomposing the arguments here would derive facts the theory does not entail
@@ -450,7 +444,7 @@ pub(all) struct BbfDistributedSnapshot {
 
 ///|
 /// BBF (Bounded Backtrack-Free / Chandy-Lamport) Distributed Snapshot Manager
-/// coordinating state across {0: CDCL, 1: EUF_HPA, 2: LRA_LIA, 3: OMT_GNN, 4: QAP_LRB}.
+/// coordinating state across {0: CDCL, 1: EUF_HPA, 2: LRA_LIA, 3: OMT_GNN, 4: QAP_HYBRID6}.
 pub(all) struct BbfSnapshotManager {
   snapshots : Array[BbfDistributedSnapshot]
   active_channel_msgs : Array[BbfChannelMsg]

@@ -1,172 +1,10 @@
 ///|
-/// Cooperative LRB (Learning Rate Branching),
-/// Hybrid 6-Dynamic Lower-Bound Incremental Discrete Pruning,
-/// QAP (Quadratic Assignment Problem) Incremental Discrete Pruner,
-/// and Deep-Fusion Adaptive LRB Incremental Optimal Solution Lemma Engine.
+/// Hybrid-6 Dynamic Lower-Bound Incremental Discrete Pruning, QAP (Quadratic Assignment
+/// Problem) Incremental Discrete Pruner, and the Adaptive Optimal Lemma Engine.
 
 ///|
-/// LRB (Learning Rate Branching) heuristic state with ERWA, Reason-Side Rate,
-/// Locality Decay, and GNN-SVM Hybrid Fusion.
-pub(all) struct LrbBrancher {
-  num_vars : Int
-  mut alpha : Double // Step-size alpha decaying from 0.40 -> 0.06
-  mut total_conflicts : Int
-  ema_lr : Array[Double] // 1-indexed EMA learning rate q_v
-  assigned_at : Array[Int] // conflict count when v was assigned
-  participated : Array[Int] // conflict participations since v was assigned
-  reason_side : Array[Int] // reason-side participations since v was assigned
-  saved_phase : Array[Bool] // phase saving / neural optimal phase
-  phase_valid : Array[Bool] // whether saved_phase holds an actually observed phase
-}
-
-///|
-/// Initial LRB step size.
-let lrb_alpha_start : Double = 0.40
-
-///|
-/// Lower bound of the LRB step size.
-let lrb_alpha_floor : Double = 0.06
-
-///|
-/// Number of conflicts over which the step size decays linearly from start to floor.
-let lrb_alpha_decay_conflicts : Int = 2000
-
-///|
-/// Create and initialize a new LrbBrancher for `num_vars` Boolean variables.
-pub fn LrbBrancher::new(num_vars : Int) -> LrbBrancher {
-  let ema_lr = Array::make(num_vars + 1, lrb_ema_initial)
-  let assigned_at = Array::make(num_vars + 1, 0)
-  let participated = Array::make(num_vars + 1, 0)
-  let reason_side = Array::make(num_vars + 1, 0)
-  let saved_phase = Array::make(num_vars + 1, false)
-  let phase_valid = Array::make(num_vars + 1, false)
-  {
-    num_vars,
-    alpha: lrb_alpha_start,
-    total_conflicts: 0,
-    ema_lr,
-    assigned_at,
-    participated,
-    reason_side,
-    saved_phase,
-    phase_valid,
-  }
-}
-
-///|
-/// Notify LRB that variable `v` has been assigned polarity `phase`.
-pub fn LrbBrancher::on_assign(
-  self : LrbBrancher,
-  v : Int,
-  phase : Bool,
-) -> Unit {
-  if v >= 1 && v <= self.num_vars {
-    self.assigned_at[v] = self.total_conflicts
-    self.participated[v] = 0
-    self.reason_side[v] = 0
-    self.saved_phase[v] = phase
-    self.phase_valid[v] = true
-  }
-}
-
-///|
-/// Notify LRB that variable `v` has been unassigned during backtracking/backjumping.
-/// Updates `ema_lr[v]` using Exponential Recency Weighted Average (ERWA).
-pub fn LrbBrancher::on_unassign(self : LrbBrancher, v : Int) -> Unit {
-  if v >= 1 && v <= self.num_vars {
-    let interval = self.total_conflicts - self.assigned_at[v]
-    if interval > 0 {
-      let r = (
-          self.participated[v].to_double() +
-          0.5 * self.reason_side[v].to_double()
-        ) /
-        interval.to_double()
-      let clamped_r = r.clamp(min=0.0, max=1.0)
-      self.ema_lr[v] = (1.0 - self.alpha) * self.ema_lr[v] +
-        self.alpha * clamped_r
-    }
-  }
-}
-
-///|
-/// Notify LRB of a CDCL(T) conflict: updates step-size alpha, increments participation
-/// and reason-side counters, and applies locality decay (0.95) to unassigned variables.
-pub fn LrbBrancher::on_conflict(
-  self : LrbBrancher,
-  conflict_vars : Array[Int],
-  reason_vars : Array[Int],
-  assigned_vals : Array[TruthVal],
-) -> Unit {
-  self.total_conflicts = self.total_conflicts + 1
-  // Bounded linear step-size schedule: reach the floor within `lrb_alpha_decay_conflicts`
-  // conflicts, so the learning rate adapts on a realistic horizon.
-  let progress = (self.total_conflicts.to_double() / lrb_alpha_decay_conflicts.to_double()).min(
-    1.0,
-  )
-  self.alpha = lrb_alpha_floor +
-    (lrb_alpha_start - lrb_alpha_floor) * (1.0 - progress)
-  for v in conflict_vars {
-    if v >= 1 && v <= self.num_vars {
-      self.participated[v] = self.participated[v] + 1
-      // Immediate ERWA boost for conflict variables still assigned
-      self.ema_lr[v] = (1.0 - self.alpha) * self.ema_lr[v] + self.alpha * 1.0
-    }
-  }
-  for rv in reason_vars {
-    if rv >= 1 && rv <= self.num_vars {
-      self.reason_side[rv] = self.reason_side[rv] + 1
-    }
-  }
-  for v = 1; v <= self.num_vars; v = v + 1 {
-    if v < assigned_vals.length() && assigned_vals[v] == Unassigned {
-      self.ema_lr[v] = self.ema_lr[v] * lrb_locality_decay
-    }
-  }
-}
-
-///|
-/// Select the highest-scoring unassigned literal using Cooperative LRB + GNN + SVM.
-pub fn LrbBrancher::select_branch_literal(
-  self : LrbBrancher,
-  assigned_vals : Array[TruthVal],
-  gnn : OmtGnn,
-  svm : SvmKernelMapper,
-) -> Int? {
-  let mut best_var = -1
-  let mut best_score = -scan_infinity
-  for v = 1; v <= self.num_vars; v = v + 1 {
-    let is_unassigned = if v < assigned_vals.length() {
-      assigned_vals[v] == Unassigned
-    } else {
-      true
-    }
-    if is_unassigned {
-      let lrb_score = self.ema_lr[v]
-      let gnn_svm_score = gnn.predict_branch_score(v, svm)
-      let hybrid_score = lrb_fuse_lrb_weight * lrb_score +
-        lrb_fuse_gnn_weight * gnn_svm_score
-      if hybrid_score > best_score {
-        best_score = hybrid_score
-        best_var = v
-      }
-    }
-  }
-  if best_var == -1 {
-    return None
-  }
-  // Phase saving is only trusted for variables whose phase has actually been observed;
-  // otherwise the GNN polarity prediction is used instead of the fabricated `false` default.
-  let pol = if self.phase_valid[best_var] {
-    self.saved_phase[best_var]
-  } else {
-    gnn.predict_optimal_polarity(best_var)
-  }
-  Some(mk_lit(best_var, pol))
-}
-
-///|
-/// 6-Tuple Dynamic Lower Bound State for Cooperative LRB Hybrid-6 Incremental Discrete Pruning
-/// (協同LRB混合6動態下邊界增量離散剪枝).
+/// 6-Tuple Dynamic Lower Bound State for Hybrid-6 Incremental Discrete Pruning
+/// (混合6動態下邊界增量離散剪枝).
 pub(all) struct Hybrid6DynamicLowerBound {
   mut lb1_lra_relaxation : Double // 1. Continuous LRA bound
   mut lb2_lia_integrality : Double // 2. Integer LIA rounding / cut bound
@@ -570,7 +408,7 @@ pub fn QapIncrementalPruner::try_generate_pruning_clause(
 /// Records the best objective found so far and emits a blocking clause over the incumbent
 /// assignment: either the positive-cost literals alone when they already explain the bound,
 /// or the full assignment block. The clause is a valid no-better-solution lemma; it is not a
-/// minimal explanation and does not do any LRB-specific reasoning beyond phase saving.
+/// minimal explanation: the caller applies the OMT phase hints after a new incumbent.
 pub(all) struct AdaptiveOptimalLemmaEngine {
   mut best_objective : Double
   mut has_incumbent : Bool
@@ -602,7 +440,6 @@ pub fn AdaptiveOptimalLemmaEngine::record_incumbent_and_synthesize_lemma(
   arith_witness : Array[Double],
   bool_obj_weights : Array[Double],
   obj_val : Double,
-  lrb : LrbBrancher,
   next_clause_id : Int,
 ) -> Clause? {
   if obj_val >= self.best_objective - tol_eps {
@@ -633,11 +470,8 @@ pub fn AdaptiveOptimalLemmaEngine::record_incumbent_and_synthesize_lemma(
         if w > 0.0 {
           pos_lits.push(mk_lit(v, false))
           pos_sum = pos_sum + w
-          lrb.saved_phase[v] = false
-        } else if w < 0.0 {
-          lrb.saved_phase[v] = true
         }
-      False => if w < 0.0 { lrb.saved_phase[v] = true }
+      False => ()
       Unassigned => ()
     }
   }
@@ -661,13 +495,13 @@ pub fn AdaptiveOptimalLemmaEngine::record_incumbent_and_synthesize_lemma(
   if lemma_lits.length() == 0 {
     return None
   }
-  let scaled_bound = (obj_val * lrb_lemma_bound_scale).to_int()
+  let scaled_bound = (obj_val * optimal_lemma_bound_scale).to_int()
   let lemma = Clause::new(
     next_clause_id,
     lemma_lits,
     true,
     lemma_lits.length().min(4),
-    LrbOptimalLemma(scaled_bound),
+    OptimalBoundLemma(scaled_bound),
   )
   self.generated_lemmas.push(lemma)
   Some(lemma)

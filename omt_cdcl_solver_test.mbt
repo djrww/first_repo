@@ -1,6 +1,7 @@
 ///|
 /// Blackbox Integration Tests for the Self-Developed OMT + GNN + SVM +
-/// HPA *Closure + Kleisli + BBF + LRB + Hybrid-6 + QAP + CAC + CDCL(T) Lazy SMT Solver.
+/// HPA *Closure + Kleisli + BBF + VSIDS + Conflict Graph + Hybrid-6 + QAP + CDCL(T) Solver,
+/// the SMT-LIB 2 front-end and the LRA / LIA compliance examples.
 
 ///|
 test "scenario_1_lazy_smt_lra_lia_euf_omt_end_to_end" {
@@ -22,8 +23,8 @@ test "scenario_1_lazy_smt_lra_lia_euf_omt_end_to_end" {
 }
 
 ///|
-test "scenario_2_qap_incremental_discrete_pruning_and_lrb_hybrid6" {
-  let res = @omt_cdcl_solver.run_qap_lrb_hybrid6_scenario()
+test "scenario_2_qap_incremental_discrete_pruning_and_hybrid6" {
+  let res = @omt_cdcl_solver.run_qap_hybrid6_scenario()
   assert_eq(res.satisfiable, true)
   // Identity permutation (0->0, 1->1, 2->2):
   // Linear cost = C[0][0] + C[1][1] + C[2][2] = 1 + 2 + 3 = 6
@@ -37,12 +38,53 @@ test "scenario_2_qap_incremental_discrete_pruning_and_lrb_hybrid6" {
 }
 
 ///|
-test "scenario_3_cac_ring_ideal_reduction_and_conservation_invariant" {
-  let (reduced_val, cac_infeasible, conserved, reductions) = @omt_cdcl_solver.run_cac_ideal_and_conservation_scenario()
-  assert_eq(reduced_val, 15.0)
-  assert_eq(cac_infeasible, true)
-  assert_eq(conserved, true)
-  assert_true(reductions >= 1)
+test "scenario_3_smtlib_lra_lia_compliance_examples" {
+  let report = @omt_cdcl_solver.run_lra_lia_compliance_scenario()
+  // Every example must parse, be solved to a definite verdict, and match its expectation.
+  assert_true(report.contains("examples matched their expected verdict"))
+  assert_true(!report.contains("MISMATCH"))
+  assert_true(!report.contains("PARSE ERROR"))
+}
+
+///|
+test "scenario_3b_smtlib_frontend_parses_scripts_and_skips_unknown_commands" {
+  let text = "(set-logic QF_LIA)\n(declare-const x Int)\n(push 1)\n(assert (>= x 2))\n(check-sat)\n(exit)"
+  let problem = @omt_cdcl_solver.parse_smtlib(text).unwrap()
+  assert_eq(problem.logic, "QF_LIA")
+  assert_eq(problem.num_arith_vars, 1)
+  assert_eq(problem.num_bool_vars, 0)
+  assert_eq(problem.assertions.length(), 1)
+  // `push` is not modelled by this front-end and must be reported instead of ignored.
+  assert_eq(problem.unsupported_commands.length(), 1)
+  assert_eq(problem.unsupported_commands[0], "push")
+  // A hard error (unknown symbol / unsupported sort) yields `None`, never a bogus problem.
+  assert_true(@omt_cdcl_solver.parse_smtlib("(declare-const y Foo)").is_none())
+  assert_true(@omt_cdcl_solver.parse_smtlib("(assert (>= z 1))").is_none())
+}
+
+///|
+test "cdclt_solver_verdicts_and_conflict_graph_scenario" {
+  let sat = @omt_cdcl_solver.solve_smtlib_text(
+    "(set-logic QF_LIA)\n(declare-const x Int)\n(assert (>= x 5))\n(assert (<= x 9))\n(check-sat)",
+    200,
+  ).unwrap()
+  assert_eq(sat.satisfiable, true)
+  assert_eq(sat.unknown, false)
+  assert_eq(sat.arith_model[0], 5.0)
+
+  let unsat = @omt_cdcl_solver.solve_smtlib_text(
+    "(set-logic QF_LIA)\n(declare-const x Int)\n(assert (= (* 2 x) 1))\n(check-sat)",
+    200,
+  ).unwrap()
+  assert_eq(unsat.satisfiable, false)
+  assert_eq(unsat.unknown, false)
+
+  // The backtracking example exercises decisions, a learnt clause and the conflict path.
+  let (report, svg) = @omt_cdcl_solver.run_conflict_graph_scenario()
+  assert_true(report.contains("expected unsat"))
+  assert_true(report.contains("graph verify"))
+  assert_true(svg.contains("<svg"))
+  assert_true(svg.contains("CDCL(T) implication graph"))
 }
 
 ///|

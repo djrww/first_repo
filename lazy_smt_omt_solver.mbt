@@ -1,9 +1,9 @@
 ///|
 /// Unified Lazy SMT + CDCL(T) + LRA + LIA + EUF + OMT Solver Engine
 /// integrating HPA *Closure, Kleisli Unification Graph, BBF Distributed Snapshots,
-/// OMT-GNN, SVM Kernel Mapper, Cooperative LRB + Hybrid-6 Dynamic Lower Bound,
-/// QAP Incremental Discrete Pruning, Ring-Lifted CAC Ideal Reduction, and
-/// Homomorphic Conservation Ideal & Surjective Axiom Invariant Projection.
+/// OMT-GNN, SVM Kernel Mapper, VSIDS Branching with Phase Saving, the CDCL(T)
+/// Implication / Conflict Graph, Hybrid-6 Dynamic Lower Bound, QAP Incremental Discrete
+/// Pruning, and Homomorphic Conservation Ideal & Surjective Axiom Invariant Projection.
 
 ///|
 /// Guarded LRA / LIA linear constraint attached to a Boolean literal.
@@ -640,19 +640,28 @@ pub(all) struct OmtSolveResult {
   euf_congruence_classes : Int
   bbf_snapshots_taken : Int
   bbf_restorations : Int
-  cac_ideal_reductions : Int
+  /// Clause LBD values that a fresh recomputation did not confirm (must stay 0).
+  lbd_certification_failures : Int
+  /// Implication-graph statistic: recorded decision nodes.
+  graph_decision_nodes : Int
+  /// Implication-graph statistic: recorded implication nodes.
+  graph_implication_nodes : Int
+  /// Implication-graph invariant violations (must stay 0).
+  graph_violations : Int
+  /// VSIDS activity rescalings performed to keep scores representable.
+  vsids_rescalings : Int
   conservation_ideal_verified : Bool
   surjective_axiom_certified_clauses : Int
   /// Clauses that failed origin/hash certification. Non-zero means the surjective-axiom
   /// claim does not hold for this run.
   axiom_certification_failures : Int
-  /// Certified-clause count per `AxiomOrigin` category (9 categories, declaration order).
+  /// Certified-clause count per `AxiomOrigin` category (8 categories, declaration order).
   axiom_schema_coverage : Array[Int]
 }
 
 ///|
 /// Unified Self-Developed OMT + GNN + SVM + HPA *Closure + Kleisli + BBF +
-/// LRB + Hybrid-6 + QAP + CAC + CDCL(T) Lazy SMT Solver.
+/// VSIDS + Conflict Graph + Hybrid-6 + QAP + CDCL(T) Lazy SMT Solver.
 pub(all) struct LazySmtOmtSolver {
   num_vars : Int
   num_arith_vars : Int
@@ -672,7 +681,10 @@ pub(all) struct LazySmtOmtSolver {
   bbf : BbfSnapshotManager
   gnn : OmtGnn
   svm : SvmKernelMapper
-  lrb : LrbBrancher
+  /// VSIDS branching state (activities + saved phases).
+  vsids : VsidsOracle
+  /// Implication / conflict graph recorded during the search, exported as SVG.
+  graph : ImplicationGraph
   hybrid6 : Hybrid6DynamicLowerBound
   mut qap : QapIncrementalPruner
   /// Number of times the 1-UIP learnt-clause invariant check failed (must stay 0).
@@ -683,13 +695,16 @@ pub(all) struct LazySmtOmtSolver {
   /// Number of clauses whose origin/hash certification failed (must stay 0 for the
   /// surjective-axiom claim to hold).
   mut axiom_certification_failures : Int
+  /// Number of learnt clauses whose recomputed LBD disagreed with the analysis value.
+  mut lbd_certification_failures : Int
   opt_lemma_engine : AdaptiveOptimalLemmaEngine
-  cac : CylindricalAlgebraicCovering
   conservation_ideal : HomomorphicConservationIdeal
   axiom_projector : SurjectiveAxiomProjector
   lra_lia : LraLiaTheorySolver
   mut total_decisions : Int
   mut total_propagations : Int
+  /// Accumulated CDCL conflicts (VSIDS decay schedule and the conflict budget read this).
+  mut total_conflicts : Int
 }
 
 ///|
@@ -725,19 +740,21 @@ pub fn LazySmtOmtSolver::new(
     bbf: BbfSnapshotManager::new(),
     gnn,
     svm,
-    lrb: LrbBrancher::new(num_vars),
+    vsids: VsidsOracle::new(num_vars),
+    graph: ImplicationGraph::new(num_vars),
     hybrid6: Hybrid6DynamicLowerBound::new(),
     qap,
     learnt_invariant_failures: 0,
     uncertified_witness_rejections: 0,
-      axiom_certification_failures: 0,
+    axiom_certification_failures: 0,
+    lbd_certification_failures: 0,
     opt_lemma_engine: AdaptiveOptimalLemmaEngine::new(num_vars),
-    cac: CylindricalAlgebraicCovering::new(num_arith_vars),
     conservation_ideal: HomomorphicConservationIdeal::new(num_vars),
     axiom_projector: SurjectiveAxiomProjector::new(),
     lra_lia: LraLiaTheorySolver::new(num_arith_vars, is_integer_arith),
     total_decisions: 0,
     total_propagations: 0,
+    total_conflicts: 0,
   }
 }
 
@@ -837,8 +854,27 @@ fn LazySmtOmtSolver::enqueue_lit(
       self.var_level[v] = self.decision_level()
       self.var_reason[v] = reason_clause_idx
       self.trail.push(lit)
-      self.lrb.on_assign(v, pol)
+      self.vsids.on_assign(v, pol)
       self.total_propagations = self.total_propagations + 1
+      // Record the assignment in the implication graph: decisions have no reason, implied
+      // literals store the antecedent literals of their reason clause.
+      let level = self.decision_level()
+      if reason_clause_idx < 0 || reason_clause_idx >= self.clauses.length() {
+        let _ = self.graph.record_decision(lit, level)
+      } else {
+        let reason = self.clauses[reason_clause_idx]
+        let antecedents : Array[Int] = []
+        for rlit in reason.lits {
+          if rlit != lit {
+            // The clause literal is falsified; the assigned literal that falsifies it is
+            // its negation, which is the node the implication edge starts from.
+            antecedents.push(lit_neg(rlit))
+          }
+        }
+        let _ = self.graph.record_implication(
+          lit, level, reason_clause_idx, antecedents,
+        )
+      }
       true
     }
     True => pol
@@ -860,7 +896,6 @@ pub fn LazySmtOmtSolver::backjump(
     match self.trail.pop() {
       Some(lit) => {
         let v = lit_var(lit)
-        self.lrb.on_unassign(v)
         self.values[v] = Unassigned
         self.var_level[v] = 0
         self.var_reason[v] = -1
@@ -918,127 +953,28 @@ pub fn LazySmtOmtSolver::bcp_propagate(self : LazySmtOmtSolver) -> Int? {
 }
 
 ///|
-/// 1-UIP Conflict Analysis with LBD (Literal Block Distance) and Homomorphic Conservation check.
+/// 1-UIP conflict analysis with LBD (Literal Block Distance) and Homomorphic Conservation
+/// check. Delegates to the analysis shared with the plain CDCL(T) solver so the two search
+/// engines cannot drift apart.
 /// Returns `(learnt_lits, backtrack_level, lbd, participating_vars, reason_vars)`.
 pub fn LazySmtOmtSolver::analyze_conflict_1uip(
   self : LazySmtOmtSolver,
   conflict_clause : Clause,
 ) -> (Array[Int], Int, Int, Array[Int], Array[Int]) {
-  let cur_level = self.decision_level()
-  if cur_level == 0 {
-    return ([], 0, 1, [], [])
-  }
-  let seen = Array::make(self.num_vars + 1, false)
-  let learnt : Array[Int] = [0] // placeholder for 1-UIP asserting literal at index 0
-  let participating_vars : Array[Int] = []
-  let reason_vars : Array[Int] = []
-  let mut path_c = 0
-  let mut resolvent_steps = 0
-
-  // Initialize from conflict_clause
-  for lit in conflict_clause.lits {
-    let v = lit_var(lit)
-    if v >= 1 && v <= self.num_vars && !seen[v] {
-      seen[v] = true
-      participating_vars.push(v)
-      if self.var_level[v] == cur_level {
-        path_c = path_c + 1
-      } else if self.var_level[v] > 0 {
-        learnt.push(lit)
-      }
-    }
-  }
-
-  // Traverse trail backward to find First UIP
-  let mut trail_idx = self.trail.length() - 1
-  let mut uip_lit = 0
-  while path_c > 0 && trail_idx >= 0 {
-    let p = self.trail[trail_idx]
-    trail_idx = trail_idx - 1
-    let pv = lit_var(p)
-    if seen[pv] && self.var_level[pv] == cur_level {
-      path_c = path_c - 1
-      if path_c == 0 {
-        uip_lit = lit_neg(p)
-        break
-      }
-      let r_idx = self.var_reason[pv]
-      if r_idx >= 0 && r_idx < self.clauses.length() {
-        resolvent_steps = resolvent_steps + 1
-        let reason_clause = self.clauses[r_idx]
-        for rlit in reason_clause.lits {
-          let rv = lit_var(rlit)
-          if rv != pv && rv >= 1 && rv <= self.num_vars {
-            if !seen[rv] {
-              seen[rv] = true
-              participating_vars.push(rv)
-              reason_vars.push(rv)
-              if self.var_level[rv] == cur_level {
-                path_c = path_c + 1
-              } else if self.var_level[rv] > 0 {
-                learnt.push(rlit)
-              }
-            }
-          }
-        }
-      } else {
-        // Decision variable reached with no reason clause
-        uip_lit = lit_neg(p)
-        break
-      }
-    }
-  }
-
-  if uip_lit == 0 {
-    // Fallback: negate active decision literals in conflict_clause
-    let fallback : Array[Int] = []
-    for lit in conflict_clause.lits {
-      fallback.push(lit)
-    }
-    return (
-      fallback,
-      (cur_level - 1).max(0),
-      fallback.length(),
-      participating_vars,
-      reason_vars,
-    )
-  }
-
-  learnt[0] = uip_lit
-  // Compute backtrack level (highest level among learnt[1..]) and LBD
-  let mut bt_level = 0
-  let mut max_idx = 1
-  let level_marks : Array[Int] = []
-  for i = 0; i < learnt.length(); i = i + 1 {
-    let lv = self.var_level[lit_var(learnt[i])]
-    let mut lv_seen = false
-    for m in level_marks {
-      if m == lv {
-        lv_seen = true
-      }
-    }
-    if !lv_seen {
-      level_marks.push(lv)
-    }
-    if i >= 1 && lv > bt_level {
-      bt_level = lv
-      max_idx = i
-    }
-  }
-  if learnt.length() > 2 && max_idx != 1 {
-    let tmp = learnt[1]
-    learnt[1] = learnt[max_idx]
-    learnt[max_idx] = tmp
-  }
-  let lbd = level_marks.length().max(1)
-  let _ = resolvent_steps
-  (learnt, bt_level, lbd, participating_vars, reason_vars)
+  analyze_conflict_1uip_from_trail(
+    self.num_vars,
+    self.decision_level(),
+    self.trail,
+    self.var_level,
+    self.var_reason,
+    self.clauses,
+    conflict_clause.lits,
+  )
 }
 
-///|
 /// Run all Lazy SMT Theory Solvers (EUF HPA *Closure, Kleisli Unification,
-/// LRA/LIA sound interval bound propagation, CAC Ideal Reduction, Dual-Layer CDN,
-/// QAP Incremental Pruner, and Hybrid-6 Dynamic Lower Bound).
+/// LRA/LIA sound interval bound propagation, Dual-Layer CDN, QAP Incremental Pruner,
+/// and Hybrid-6 Dynamic Lower Bound).
 /// The arithmetic layer performs interval bound propagation only (this engine has no
 /// simplex tableau); every conflict it reports is derived from the reason sets of the
 /// bounds involved, so the conflict clause is a genuine theory lemma.
@@ -1120,21 +1056,7 @@ pub fn LazySmtOmtSolver::check_lazy_theories(
     None => ()
   }
 
-  // 3. Run Ring-Lifted Cylindrical Algebraic Covering (CAC) Ideal Reduction
-  match
-    self.cac.check_cylindrical_covering(
-      self.lra_lia.witness,
-      self.lra_lia.cur_lb,
-      self.lra_lia.cur_ub,
-      self.lra_lia.lb_reasons,
-      self.lra_lia.ub_reasons,
-      self.clauses.length(),
-    ) {
-    Some(cac_conflict) => return Some(cac_conflict)
-    None => ()
-  }
-
-  // 4. Evaluate QAP Incremental Discrete Pruner & Hybrid-6 Dynamic Lower Bound
+  // 3. Evaluate QAP Incremental Discrete Pruner & Hybrid-6 Dynamic Lower Bound
   let qap_lb = self.qap.compute_incremental_lower_bound(self.values)
   let _ = self.hybrid6.update_and_fuse(
     self.values,
@@ -1174,7 +1096,7 @@ pub fn LazySmtOmtSolver::check_lazy_theories(
             blocking,
             true,
             blocking.length().min(4),
-            LrbOptimalLemma((ub * lrb_lemma_bound_scale).to_int()),
+            OptimalBoundLemma((ub * optimal_lemma_bound_scale).to_int()),
           ),
         )
       }
@@ -1220,13 +1142,17 @@ fn LazySmtOmtSolver::handle_conflict(
   if !self.axiom_projector.certify_clause_origin(conflict_clause) {
     self.axiom_certification_failures = self.axiom_certification_failures + 1
   }
+  // Record the falsified literals in the implication graph and re-check the trace.
+  let _ = self.graph.record_conflict(conflict_clause.lits)
+  let _ = self.graph.verify()
   if self.decision_level() == 0 {
     return false
   }
-  let (learnt_lits, bt_level, lbd, part_vars, reason_vars) = self.analyze_conflict_1uip(
+  let (learnt_lits, bt_level, lbd, part_vars, _reason_vars) = self.analyze_conflict_1uip(
     conflict_clause,
   )
-  self.lrb.on_conflict(part_vars, reason_vars, self.values)
+  self.total_conflicts = self.total_conflicts + 1
+  self.vsids.on_conflict(part_vars)
 
   // Feed negative sample (y = -1.0) to OMT-SVM Kernel Mapper
   if part_vars.length() > 0 {
@@ -1239,11 +1165,17 @@ fn LazySmtOmtSolver::handle_conflict(
   if learnt_lits.length() == 0 {
     return false
   }
+  // Certify the LBD: recompute the distinct decision levels of the learnt clause under the
+  // pre-backjump assignment instead of trusting the analysis value.
+  let certified_lbd = distinct_decision_levels(learnt_lits, self.var_level)
+  if certified_lbd != lbd {
+    self.lbd_certification_failures = self.lbd_certification_failures + 1
+  }
   let learnt_clause = Clause::new(
     self.clauses.length(),
     learnt_lits,
     true,
-    lbd,
+    certified_lbd,
     UipResolution(part_vars.length(), self.decision_level()),
   )
   // Verify the 1-UIP learnt-clause invariant under the pre-backjump assignment: every
@@ -1253,7 +1185,7 @@ fn LazySmtOmtSolver::handle_conflict(
   if !self.conservation_ideal.verify_learnt_clause_blocks(
     learnt_clause,
     self.values,
-  ) {
+  ) || !self.graph.all_lits_justified(learnt_clause.lits, self.values) {
     self.learnt_invariant_failures = self.learnt_invariant_failures + 1
     let parent_level = (self.decision_level() - 1).max(0)
     self.backjump(parent_level)
@@ -1280,13 +1212,82 @@ fn LazySmtOmtSolver::handle_conflict(
 }
 
 ///|
+/// VSIDS branching with GNN/SVM tie-breaking and phase saving. The highest-activity
+/// unassigned variable wins; when several variables share the top activity the OMT-GNN /
+/// SVM branch utility score decides between them. The polarity is the saved phase when one
+/// has been observed, otherwise the GNN polarity prediction.
+pub fn LazySmtOmtSolver::select_branch_literal_vsids(
+  self : LazySmtOmtSolver,
+) -> Int? {
+  let mut best_activity = -1.0
+  for v = 1; v <= self.num_vars; v = v + 1 {
+    if self.values[v] == Unassigned {
+      let a = self.vsids.activity_of(v)
+      if a > best_activity {
+        best_activity = a
+      }
+    }
+  }
+  if best_activity < 0.0 {
+    return None
+  }
+  let mut best_var = -1
+  let mut best_utility = 0.0
+  for v = 1; v <= self.num_vars; v = v + 1 {
+    if self.values[v] == Unassigned &&
+      self.vsids.activity_of(v) >= best_activity - tol_eps {
+      let utility = self.gnn.predict_branch_score(v, self.svm)
+      if best_var < 0 || utility > best_utility {
+        best_var = v
+        best_utility = utility
+      }
+    }
+  }
+  if best_var < 0 {
+    return None
+  }
+  let phase = if self.vsids.is_phase_known(best_var) {
+    self.vsids.saved_phase_of(best_var)
+  } else {
+    self.gnn.predict_optimal_polarity(best_var)
+  }
+  Some(mk_lit(best_var, phase))
+}
+
+/// After a new incumbent, save the cost-reducing polarity as the preferred phase: a
+/// positive-weight variable that was True is retried False, a negative-weight variable is
+/// retried True, so the search alternates towards cheaper assignments.
+pub fn LazySmtOmtSolver::hint_optimal_phases(self : LazySmtOmtSolver) -> Unit {
+  let vals = self.opt_lemma_engine.best_assignment
+  for v = 1
+      v <= self.num_vars && v < vals.length() && v < self.bool_obj_weights.length()
+      v = v + 1 {
+    let w = self.bool_obj_weights[v]
+    match vals[v] {
+      True =>
+        if w > 0.0 {
+          self.vsids.hint_phase(v, false)
+        } else if w < 0.0 {
+          self.vsids.hint_phase(v, true)
+        }
+      False => if w < 0.0 { self.vsids.hint_phase(v, true) }
+      Unassigned => ()
+    }
+  }
+}
+
 /// Execute the full Self-Developed OMT + GNN + SVM + CDCL(T) + Lazy SMT Optimization Loop.
 pub fn LazySmtOmtSolver::solve_omt(
   self : LazySmtOmtSolver,
   max_conflicts : Int,
 ) -> OmtSolveResult {
-  // Initial GNN message passing warm-up over input CNF & EUF graph
-  self.gnn.forward_message_passing(self.clauses, self.lrb.ema_lr, 2)
+  // Fresh implication-graph trace for this solve (cumulative counters are kept).
+  self.graph.clear()
+  // Initial GNN message passing warm-up over input CNF & EUF graph, using the (still
+  // uniform) VSIDS activity as the per-variable feature.
+  self.gnn.forward_message_passing(
+    self.clauses, self.vsids.normalized_activity_scores(), 2,
+  )
   let _ = self.bbf.capture_snapshot(
     0,
     0,
@@ -1301,7 +1302,7 @@ pub fn LazySmtOmtSolver::solve_omt(
   let max_steps = max_conflicts * arith_step_budget_per_conflict +
     arith_step_budget_base
   while search_active &&
-        self.lrb.total_conflicts < max_conflicts &&
+        self.total_conflicts < max_conflicts &&
         steps < max_steps {
     steps = steps + 1
     // 1. Outer CDCL Boolean Constraint Propagation
@@ -1329,13 +1330,16 @@ pub fn LazySmtOmtSolver::solve_omt(
       None => ()
     }
 
-    // 3. Periodically refresh OMT-GNN embeddings with LRB conflict learning rates
-    if self.lrb.total_conflicts > 0 && self.lrb.total_conflicts % 8 == 0 {
-      self.gnn.forward_message_passing(self.clauses, self.lrb.ema_lr, 1)
+    // 3. Periodically refresh OMT-GNN embeddings with the normalised VSIDS activity
+    if self.total_conflicts > 0 &&
+      self.total_conflicts % vsids_gnn_refresh_period == 0 {
+      self.gnn.forward_message_passing(
+        self.clauses, self.vsids.normalized_activity_scores(), 1,
+      )
     }
 
-    // 4. Select next unassigned variable via Cooperative LRB + GNN + SVM
-    match self.lrb.select_branch_literal(self.values, self.gnn, self.svm) {
+    // 4. Select the next unassigned variable by VSIDS (GNN/SVM decide ties and phases)
+    match self.select_branch_literal_vsids() {
       Some(branch_lit) => {
         self.total_decisions = self.total_decisions + 1
         self.trail_lim.push(self.trail.length())
@@ -1382,10 +1386,11 @@ pub fn LazySmtOmtSolver::solve_omt(
             self.lra_lia.witness,
             self.bool_obj_weights,
             obj,
-            self.lrb,
             self.clauses.length(),
           ) {
           Some(opt_lemma) => {
+            // OMT phase hints: retry the cost-reducing polarity of the new incumbent.
+            self.hint_optimal_phases()
             // Also project Superposed Exhaustive Upper-Bound clauses if pure Boolean objective
             if self.qap.n == 0 && self.num_arith_vars == 0 {
               let ub_clauses = self.axiom_projector.project_upper_bound_clauses(
@@ -1421,7 +1426,7 @@ pub fn LazySmtOmtSolver::solve_omt(
             let _ = self.add_clause(
               block_lits,
               true,
-              LrbOptimalLemma((obj * lrb_lemma_bound_scale).to_int()),
+              OptimalBoundLemma((obj * optimal_lemma_bound_scale).to_int()),
             )
           }
         }
@@ -1463,7 +1468,7 @@ pub fn LazySmtOmtSolver::solve_omt(
     },
     best_bool_model: self.opt_lemma_engine.best_assignment.copy(),
     best_arith_model: self.opt_lemma_engine.best_arith_assignment.copy(),
-    total_conflicts: self.lrb.total_conflicts,
+    total_conflicts: self.total_conflicts,
     total_decisions: self.total_decisions,
     total_propagations: self.total_propagations,
     hybrid6_final_lb: self.hybrid6.fused_lower_bound,
@@ -1471,7 +1476,11 @@ pub fn LazySmtOmtSolver::solve_omt(
     euf_congruence_classes: euf_classes,
     bbf_snapshots_taken: self.bbf.total_snapshots_taken,
     bbf_restorations: self.bbf.total_restorations,
-    cac_ideal_reductions: self.cac.ideal_reductions_count,
+    lbd_certification_failures: self.lbd_certification_failures,
+    graph_decision_nodes: self.graph.decisions,
+    graph_implication_nodes: self.graph.implications,
+    graph_violations: self.graph.violations,
+    vsids_rescalings: self.vsids.rescalings,
     conservation_ideal_verified: conserved,
     surjective_axiom_certified_clauses: self.axiom_projector.certified_clause_count(),
     axiom_certification_failures: self.axiom_certification_failures,

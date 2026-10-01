@@ -101,7 +101,7 @@ pub fn Framebuffer::rasterize_triangle_local_aa(
   let p1 : Vec2 = { x: v1.x, y: v1.y, }
   let p2 : Vec2 = { x: v2.x, y: v2.y, }
   let area2 = edge_function(p0, p1, p2)
-  if area2.abs() < 1.0e-8 {
+  if area2.abs() < raster_degenerate_area_tol {
     return 0
   }
   let sign = if area2 > 0.0 { 1.0 } else { -1.0 }
@@ -148,7 +148,9 @@ pub fn Framebuffer::rasterize_triangle_local_aa(
         let e0 = edge_function(p1, p2, sp) * sign
         let e1 = edge_function(p2, p0, sp) * sign
         let e2 = edge_function(p0, p1, sp) * sign
-        if e0 >= -1.0e-7 && e1 >= -1.0e-7 && e2 >= -1.0e-7 {
+        if e0 >= -raster_edge_bias_tol &&
+          e1 >= -raster_edge_bias_tol &&
+          e2 >= -raster_edge_bias_tol {
           covered_samples = covered_samples + 1
           sum_w0 = sum_w0 + e0 * inv_area
           sum_w1 = sum_w1 + e1 * inv_area
@@ -179,7 +181,7 @@ pub fn Framebuffer::rasterize_triangle_local_aa(
           sdf_atlas,
         )
         let aa_frag : ColorRgba = { ..raw_frag, a: raw_frag.a * coverage, }
-        if aa_frag.a > 1.0e-5 {
+        if aa_frag.a > raster_alpha_discard_tol {
           let dst = self.pixels[row_offset + px]
           self.pixels[row_offset + px] = blend_src_over(aa_frag, dst)
           shaded_Here = shaded_Here + 1
@@ -283,6 +285,7 @@ pub fn IncrementalRenderEngine::new(
 ) -> IncrementalRenderEngine {
   // A non-positive tile size means "use the package default".
   let tile_size = if tile_size > 0.0 { tile_size } else { spatial_default_tile_size }
+  // Placeholder atlas content (demo asset): a centred disc and a horizontal capsule.
   let sdf_shapes : Array[SdfShapeKind] = [
     SdfCircle({ x: 0.5, y: 0.5, }, 0.36),
     SdfCapsule({ x: 0.25, y: 0.5, }, { x: 0.75, y: 0.5, }, 0.18),
@@ -301,7 +304,7 @@ pub fn IncrementalRenderEngine::new(
     dirty_tracker: DirtyRectTracker::new(
       width.to_double(),
       height.to_double(),
-      1.20,
+      dirty_coalesce_ratio,
     ),
     vbo_arena: FlatVertexArena::new(),
     sdf_atlas,
@@ -396,7 +399,9 @@ pub fn IncrementalRenderEngine::add_clustered_vector_stroke(
   color : ColorRgba,
 ) -> (Int, Int) {
   let prim_id = self.primitives.length()
-  let stroke = VectorStroke::from_samples(prim_id, samples, stroke_width, 0.75)
+  let stroke = VectorStroke::from_samples(
+    prim_id, samples, stroke_width, stroke_rdp_epsilon,
+  )
   let cluster_id = self.stroke_clusterer.add_stroke_to_clusters(stroke)
 
   let pts = stroke.simplified_points

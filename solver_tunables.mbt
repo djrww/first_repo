@@ -101,13 +101,49 @@ let arith_propagation_round_limit : Int = 512
 let arith_witness_round_limit : Int = 64
 
 ///|
-/// Maximum number of polynomial reduction steps performed by the cylindrical algebraic
-/// covering before it gives up on a generator.
+/// Maximum number of reduction steps performed by the polynomial ideal reduction before it
+/// gives up on a generator.
 let poly_reduction_step_limit : Int = 1000000
+
+///|
+/// Per-conflict share of the plain CDCL(T) solver's search-step budget.
+let cdcl_step_budget_per_conflict : Int = 20
+
+///|
+/// Constant part of the plain CDCL(T) solver's search-step budget.
+let cdcl_step_budget_base : Int = 1000
+
+///|
+/// Conflict budget used by the SMT-LIB compliance examples and the conflict-graph scenario.
+let compliance_conflict_budget : Int = 200
 
 ///|
 /// Capacity of the SVM support-vector ring buffer.
 let default_support_vector_capacity : Int = 32
+
+///|
+/// Degenerate-triangle area threshold below which a primitive is skipped by the rasteriser.
+let raster_degenerate_area_tol : Double = 1.0e-8
+
+///|
+/// Tolerance (in edge-function units) applied when testing sub-sample coverage.
+let raster_edge_bias_tol : Double = 1.0e-7
+
+///|
+/// Alpha threshold below which a shaded fragment is discarded instead of blended.
+let raster_alpha_discard_tol : Double = 1.0e-5
+
+///|
+/// Radius factor used when the engine coalesces raw dirty rectangles into merged ones.
+let dirty_coalesce_ratio : Double = 1.20
+
+///|
+/// RDP simplification epsilon used for strokes inserted through the incremental engine.
+let stroke_rdp_epsilon : Double = 0.75
+
+///|
+/// Number of coordinate bits interleaved by the Morton Z-order hash.
+let morton_coord_bits : Int = 14
 
 // ---------------------------------------------------------------------------
 // Spatial indexing / rendering layout
@@ -151,31 +187,47 @@ let gnn_embed_dim : Int = 6
 /// Mixing weight of the SVM margin inside the neural branching utility score.
 let gnn_svm_mix : Double = 0.25
 
+///|
+/// Weights of the six OMT-GNN embedding features inside `predict_branch_score`.
+let gnn_branch_weight_pos_deg : Double = 0.40
+let gnn_branch_weight_neg_deg : Double = 0.40
+let gnn_branch_weight_obj : Double = 0.55
+let gnn_branch_weight_balance : Double = 0.30
+let gnn_branch_weight_dim4 : Double = 0.45
+let gnn_branch_weight_activity : Double = 0.65
+
+///|
+/// Weights of the GNN polarity (phase) prediction.
+let gnn_polarity_structural_weight : Double = 1.2
+let gnn_polarity_objective_weight : Double = 0.45
+let gnn_polarity_balance_weight : Double = 0.2
+
 // ---------------------------------------------------------------------------
-// LRB branching heuristic
+// VSIDS branching heuristic
 // ---------------------------------------------------------------------------
 
 ///|
-/// Initial EMA learning rate of a fresh LRB variable.
-let lrb_ema_initial : Double = 0.15
+/// Initial VSIDS activity increment (bumped on every conflict participant).
+let vsids_var_inc_initial : Double = 1.0
 
 ///|
-/// Weight of the LRB score in the fused variable-selection score
-/// (`0.70 * LRB + 0.30 * GNN/SVM`).
-let lrb_fuse_lrb_weight : Double = 0.70
+/// VSIDS activity decay: the increment is divided by this value after every conflict.
+let vsids_var_decay : Double = 0.95
 
 ///|
-/// Weight of the GNN/SVM score in the fused variable-selection score.
-let lrb_fuse_gnn_weight : Double = 0.30
+/// Activity rescale threshold; above it all activities (and the increment) are divided by
+/// the increment to keep the scores representable.
+let vsids_rescale_threshold : Double = 1.0e100
 
 ///|
-/// Locality decay applied to the learning rate of not-yet-assigned variables on conflict.
-let lrb_locality_decay : Double = 0.95
+/// Refresh the OMT-GNN embeddings every this many conflicts, using the normalised VSIDS
+/// activity as the per-variable feature.
+let vsids_gnn_refresh_period : Int = 8
 
 ///|
 /// Scale factor used to encode an objective upper bound as the integer payload of
-/// `LrbOptimalLemma` (`(bound * lrb_lemma_bound_scale).to_int()`).
-let lrb_lemma_bound_scale : Double = 100.0
+/// `OptimalBoundLemma` (`(bound * optimal_lemma_bound_scale).to_int()`).
+let optimal_lemma_bound_scale : Double = 100.0
 
 // ---------------------------------------------------------------------------
 // Vertex buffer layout
