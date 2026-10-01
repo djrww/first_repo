@@ -408,16 +408,12 @@ pub fn KleisliUnificationGraph::unify_kleisli(
       } else {
         None
       }
-    (App(f1, args1), App(f2, args2)) => {
-      // In Kleisli unification for syntactic constructors with same symbol, unify args recursively
-      if f1 == f2 && args1.length() == args2.length() {
-        for i = 0; i < args1.length(); i = i + 1 {
-          match self.unify_kleisli(args1[i], args2[i], reason_lit) {
-            Some(conflict) => return Some(conflict)
-            None => ()
-          }
-        }
-      }
+    (App(_, _), App(_, _)) => {
+      // `Term::App` names an *uninterpreted* function symbol, so f(a) = f(b) does not imply
+      // a = b: decomposing the arguments here would derive facts the theory does not entail
+      // (and could turn a satisfiable disequality into a bogus conflict). Asserting the
+      // application equality is exactly what the caller asked for; the HPA *Closure then
+      // propagates only the valid congruence direction (a =* b ⟹ f(a) =* f(b)).
       self.hpa.assert_eq(u1, u2, reason_lit)
       None
     }
@@ -512,11 +508,33 @@ pub fn BbfSnapshotManager::capture_snapshot(
   }
   self.active_channel_msgs.clear()
 
-  // Verify Chandy-Lamport / BBF consistent cut invariant:
-  // Every parent index is within [0, uf_p.length()) and lower_bounds <= upper_bounds
+  // Verify the Chandy-Lamport / BBF consistent-cut invariants. These are real properties of
+  // the captured state, not a tautology:
+  //   1. every parent index is within [0, uf_p.length()),
+  //   2. the parent relation is a forest (following parents always reaches a self-parented
+  //      root without cycling), which is what makes the union-find a valid congruence state,
+  //   3. every arithmetic interval is non-empty (lower <= upper).
   let mut cut_ok = true
   for i = 0; i < uf_p.length(); i = i + 1 {
     if uf_p[i] < 0 || uf_p[i] >= uf_p.length() {
+      cut_ok = false
+    }
+  }
+  if cut_ok {
+    for i = 0; i < uf_p.length(); i = i + 1 {
+      let mut cur = i
+      let mut steps = 0
+      while uf_p[cur] != cur && steps < uf_p.length() {
+        cur = uf_p[cur]
+        steps = steps + 1
+      }
+      if steps >= uf_p.length() {
+        cut_ok = false
+      }
+    }
+  }
+  for i = 0; i < lb_copy.length() && i < ub_copy.length(); i = i + 1 {
+    if lb_copy[i] > ub_copy[i] + tol_eps {
       cut_ok = false
     }
   }

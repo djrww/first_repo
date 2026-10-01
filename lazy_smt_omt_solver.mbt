@@ -33,8 +33,12 @@ pub(all) struct LraLiaTheorySolver {
   base_ub : Array[Double]
   cur_lb : Array[Double]
   cur_ub : Array[Double]
-  lb_reason : Array[Int] // guard_lit that established cur_lb[i]
-  ub_reason : Array[Int] // guard_lit that established cur_ub[i]
+  /// Guard literals that established `cur_lb[i]`. A bound derived from a multi-variable
+  /// constraint depends on the bounds of the other variables as well, so this is the
+  /// transitively closed reason set; an empty set means "unconditional".
+  lb_reasons : Array[Array[Int]]
+  /// Guard literals that established `cur_ub[i]` (transitively closed, empty = unconditional).
+  ub_reasons : Array[Array[Int]]
   is_integer : Array[Bool]
   witness : Array[Double]
   /// Set only when `witness` has been certified to satisfy every active guarded constraint.
@@ -53,12 +57,16 @@ pub fn LraLiaTheorySolver::new(
   num_arith_vars : Int,
   is_integer : Array[Bool],
 ) -> LraLiaTheorySolver {
-  let base_lb = Array::make(num_arith_vars, 0.0)
-  let base_ub = Array::make(num_arith_vars, 100.0)
-  let cur_lb = Array::make(num_arith_vars, 0.0)
-  let cur_ub = Array::make(num_arith_vars, 100.0)
-  let lb_reason = Array::make(num_arith_vars, 0)
-  let ub_reason = Array::make(num_arith_vars, 0)
+  let base_lb = Array::make(num_arith_vars, arith_default_lower_bound)
+  let base_ub = Array::make(num_arith_vars, arith_default_upper_bound)
+  let cur_lb = Array::make(num_arith_vars, arith_default_lower_bound)
+  let cur_ub = Array::make(num_arith_vars, arith_default_upper_bound)
+  let lb_reasons : Array[Array[Int]] = []
+  let ub_reasons : Array[Array[Int]] = []
+  for _i = 0; _i < num_arith_vars; _i = _i + 1 {
+    lb_reasons.push([])
+    ub_reasons.push([])
+  }
   let witness = Array::make(num_arith_vars, 0.0)
   {
     num_arith_vars,
@@ -66,8 +74,8 @@ pub fn LraLiaTheorySolver::new(
     base_ub,
     cur_lb,
     cur_ub,
-    lb_reason,
-    ub_reason,
+    lb_reasons,
+    ub_reasons,
     is_integer: is_integer.copy(),
     witness,
     witness_certified: false,
@@ -144,18 +152,13 @@ pub fn is_lit_false(lit : Int, values : Array[TruthVal]) -> Bool {
 }
 
 ///|
-/// Push unique negated literal `-r` into `conflict_lits` if `r != 0`.
+/// Push the negated literal `-r` into `conflict_lits` if `r != 0`, keeping the clause free
+/// of duplicate literals (delegates the dedup to `push_unique`).
 fn push_conflict_reason(conflict_lits : Array[Int], r : Int) -> Unit {
   if r == 0 {
     return
   }
-  let neg_r = lit_neg(r)
-  for x in conflict_lits {
-    if x == neg_r {
-      return
-    }
-  }
-  conflict_lits.push(neg_r)
+  push_unique(conflict_lits, lit_neg(r))
 }
 
 ///|
@@ -211,19 +214,20 @@ fn arith_constraint_violation(
 }
 
 ///|
-/// Try to tighten `cur_lb[v]` up to `bound`.
+/// Try to tighten `cur_lb[v]` up to `bound`, recording the (already transitively closed)
+/// guard literals `reasons` that justify the new bound.
 /// Returns 1 when tightened, 2 when the tightened bounds are contradictory, 0 otherwise.
 fn LraLiaTheorySolver::tighten_lower(
   self : LraLiaTheorySolver,
   v : Int,
   bound : Double,
-  reason : Int,
+  reasons : Array[Int],
 ) -> Int {
   if bound <= self.cur_lb[v] + tol_eps {
     return 0
   }
   self.cur_lb[v] = bound
-  self.lb_reason[v] = reason
+  self.lb_reasons[v] = reasons.copy()
   if self.cur_lb[v] > self.cur_ub[v] + tol_eps {
     return 2
   }
@@ -231,19 +235,20 @@ fn LraLiaTheorySolver::tighten_lower(
 }
 
 ///|
-/// Try to tighten `cur_ub[v]` down to `bound`.
+/// Try to tighten `cur_ub[v]` down to `bound`, recording the (already transitively closed)
+/// guard literals `reasons` that justify the new bound.
 /// Returns 1 when tightened, 2 when the tightened bounds are contradictory, 0 otherwise.
 fn LraLiaTheorySolver::tighten_upper(
   self : LraLiaTheorySolver,
   v : Int,
   bound : Double,
-  reason : Int,
+  reasons : Array[Int],
 ) -> Int {
   if bound >= self.cur_ub[v] - tol_eps {
     return 0
   }
   self.cur_ub[v] = bound
-  self.ub_reason[v] = reason
+  self.ub_reasons[v] = reasons.copy()
   if self.cur_lb[v] > self.cur_ub[v] + tol_eps {
     return 2
   }
@@ -278,9 +283,12 @@ fn LraLiaTheorySolver::apply_integrality(
 }
 
 ///|
-/// Build a theory conflict clause from the reasons recorded for variable `v`.
-/// `integrality` selects the LIA integrality-cut axiom over the LRA Farkas axiom, so the
-/// clause origin always reflects the actual cause of the conflict.
+/// Build a theory conflict clause from the (transitively closed) reason sets recorded for
+/// variable `v`: the clause is falsified exactly when every guard in `lb_reasons[v]` and
+/// `ub_reasons[v]` (plus `guard_lit`, if any) holds, which is the situation in which the
+/// bounds of `v` really are contradictory.
+/// `integrality` selects the LIA integrality-cut axiom over the LRA bound-conflict axiom, so
+/// the clause origin reflects the actual cause of the conflict.
 fn LraLiaTheorySolver::build_arith_conflict(
   self : LraLiaTheorySolver,
   guard_lit : Int,
@@ -290,8 +298,12 @@ fn LraLiaTheorySolver::build_arith_conflict(
 ) -> Clause {
   let lits : Array[Int] = []
   push_conflict_reason(lits, guard_lit)
-  push_conflict_reason(lits, self.lb_reason[v])
-  push_conflict_reason(lits, self.ub_reason[v])
+  for r in self.lb_reasons[v] {
+    push_conflict_reason(lits, r)
+  }
+  for r in self.ub_reasons[v] {
+    push_conflict_reason(lits, r)
+  }
   let origin = if integrality {
     self.lia_cuts = self.lia_cuts + 1
     LiaIntegralityCut(v)
@@ -490,8 +502,8 @@ pub fn LraLiaTheorySolver::propagate_and_check(
   for i = 0; i < self.num_arith_vars; i = i + 1 {
     self.cur_lb[i] = self.base_lb[i]
     self.cur_ub[i] = self.base_ub[i]
-    self.lb_reason[i] = 0
-    self.ub_reason[i] = 0
+    self.lb_reasons[i] = []
+    self.ub_reasons[i] = []
   }
   self.witness_certified = false
   self.propagation_rounds = 0
@@ -516,9 +528,18 @@ pub fn LraLiaTheorySolver::propagate_and_check(
         if vj < 0 || vj >= self.num_arith_vars || aj.abs() <= tol_eps {
           continue
         }
-        // Interval bounds of the remaining terms of this constraint
+        // Interval bounds of the remaining terms of this constraint, together with the guard
+        // literals that established those bounds. A bound derived from a multi-variable
+        // constraint is only valid while *all* of them hold, so the reason set must be the
+        // transitive closure of the dependencies (this is what makes the lemma sound).
         let mut min_rest = 0.0
         let mut max_rest = 0.0
+        let min_reasons : Array[Int] = []
+        let max_reasons : Array[Int] = []
+        if c.guard_lit != 0 {
+          min_reasons.push(c.guard_lit)
+          max_reasons.push(c.guard_lit)
+        }
         for other in c.term.coeffs {
           let (vi, ai) = other
           if vi == vj || vi < 0 || vi >= self.num_arith_vars {
@@ -527,9 +548,21 @@ pub fn LraLiaTheorySolver::propagate_and_check(
           if ai >= 0.0 {
             min_rest = min_rest + ai * self.cur_lb[vi]
             max_rest = max_rest + ai * self.cur_ub[vi]
+            for r in self.lb_reasons[vi] {
+              push_unique(min_reasons, r)
+            }
+            for r in self.ub_reasons[vi] {
+              push_unique(max_reasons, r)
+            }
           } else {
             min_rest = min_rest + ai * self.cur_ub[vi]
             max_rest = max_rest + ai * self.cur_lb[vi]
+            for r in self.ub_reasons[vi] {
+              push_unique(min_reasons, r)
+            }
+            for r in self.lb_reasons[vi] {
+              push_unique(max_reasons, r)
+            }
           }
         }
         // `aj * x_j` is bounded above by `rhs - min_rest` and below by `rhs - max_rest`
@@ -539,9 +572,9 @@ pub fn LraLiaTheorySolver::propagate_and_check(
             upper = upper - tol_eps
           }
           let status = if aj > 0.0 {
-            self.tighten_upper(vj, upper / aj, c.guard_lit)
+            self.tighten_upper(vj, upper / aj, min_reasons)
           } else {
-            self.tighten_lower(vj, upper / aj, c.guard_lit)
+            self.tighten_lower(vj, upper / aj, min_reasons)
           }
           if status == 2 {
             // An integer variable whose bounds became contradictory is separated by the
@@ -561,9 +594,9 @@ pub fn LraLiaTheorySolver::propagate_and_check(
             lower = lower + tol_eps
           }
           let status = if aj > 0.0 {
-            self.tighten_lower(vj, lower / aj, c.guard_lit)
+            self.tighten_lower(vj, lower / aj, max_reasons)
           } else {
-            self.tighten_upper(vj, lower / aj, c.guard_lit)
+            self.tighten_upper(vj, lower / aj, max_reasons)
           }
           if status == 2 {
             return Some(
@@ -1014,8 +1047,11 @@ pub fn LazySmtOmtSolver::analyze_conflict_1uip(
 
 ///|
 /// Run all Lazy SMT Theory Solvers (EUF HPA *Closure, Kleisli Unification,
-/// LRA/LIA Simplex-Bound Propagation, CAC Ideal Reduction, Dual-Layer CDN,
+/// LRA/LIA sound interval bound propagation, CAC Ideal Reduction, Dual-Layer CDN,
 /// QAP Incremental Pruner, and Hybrid-6 Dynamic Lower Bound).
+/// The arithmetic layer performs interval bound propagation only (this engine has no
+/// simplex tableau); every conflict it reports is derived from the reason sets of the
+/// bounds involved, so the conflict clause is a genuine theory lemma.
 /// Returns `Some(theory_conflict_clause)` if any theory or bound check fails.
 pub fn LazySmtOmtSolver::check_lazy_theories(
   self : LazySmtOmtSolver,

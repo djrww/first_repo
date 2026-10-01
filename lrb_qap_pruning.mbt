@@ -34,7 +34,7 @@ let lrb_alpha_decay_conflicts : Int = 2000
 ///|
 /// Create and initialize a new LrbBrancher for `num_vars` Boolean variables.
 pub fn LrbBrancher::new(num_vars : Int) -> LrbBrancher {
-  let ema_lr = Array::make(num_vars + 1, 0.15)
+  let ema_lr = Array::make(num_vars + 1, lrb_ema_initial)
   let assigned_at = Array::make(num_vars + 1, 0)
   let participated = Array::make(num_vars + 1, 0)
   let reason_side = Array::make(num_vars + 1, 0)
@@ -119,7 +119,7 @@ pub fn LrbBrancher::on_conflict(
   }
   for v = 1; v <= self.num_vars; v = v + 1 {
     if v < assigned_vals.length() && assigned_vals[v] == Unassigned {
-      self.ema_lr[v] = self.ema_lr[v] * 0.95
+      self.ema_lr[v] = self.ema_lr[v] * lrb_locality_decay
     }
   }
 }
@@ -143,7 +143,8 @@ pub fn LrbBrancher::select_branch_literal(
     if is_unassigned {
       let lrb_score = self.ema_lr[v]
       let gnn_svm_score = gnn.predict_branch_score(v, svm)
-      let hybrid_score = 0.70 * lrb_score + 0.30 * gnn_svm_score
+      let hybrid_score = lrb_fuse_lrb_weight * lrb_score +
+        lrb_fuse_gnn_weight * gnn_svm_score
       if hybrid_score > best_score {
         best_score = hybrid_score
         best_var = v
@@ -194,8 +195,11 @@ pub fn Hybrid6DynamicLowerBound::new() -> Hybrid6DynamicLowerBound {
 
 ///|
 /// Recompute all 6 dynamic lower-bound components and fuse them into the admissible
-/// supremum used for incremental discrete pruning. LB4/LB6 are calibrated so that they can
-/// only ever raise the fused bound up to the sound components, never above them.
+/// supremum used for incremental discrete pruning.
+/// Only LB1 (LRA relaxation), LB2 (LIA integrality) and LB3 (QAP Gilmore-Lawler floor) are
+/// sound lower bounds of the remaining cost. LB4 (SVM), LB5 (EUF coupling) and LB6 (GNN) are
+/// calibrated heuristics: each is clamped into the interval spanned by the sound components,
+/// so `fused_lower_bound` can never exceed the sound supremum and pruning stays admissible.
 pub fn Hybrid6DynamicLowerBound::update_and_fuse(
   self : Hybrid6DynamicLowerBound,
   assigned_vals : Array[TruthVal],
@@ -274,7 +278,12 @@ pub fn Hybrid6DynamicLowerBound::update_and_fuse(
     base_sound,
   )
 
-  // 5. LB5: EUF Congruence Partition lower bound (coupled equal variables)
+  // 5. LB5: EUF Congruence Partition coupling heuristic (calibrated, see below).
+  // `euf_congruence_pairs` only records that two Boolean variables sit in the same EUF
+  // component of the graph; it does not prove that one being True forces the other to be
+  // True. Treating the pair as a forced equality would therefore over-estimate the lower
+  // bound and could prune away the true optimum, so like LB4/LB6 this component is clamped
+  // into the sound interval and can never raise the fused bound above LB1..LB3.
   let mut euf_coupled_bonus = 0.0
   for pair in euf_congruence_pairs {
     let (u, v) = pair
@@ -301,8 +310,8 @@ pub fn Hybrid6DynamicLowerBound::update_and_fuse(
       }
     }
   }
-  self.lb5_euf_congruence_partition = self.lb1_lra_relaxation +
-    euf_coupled_bonus
+  self.lb5_euf_congruence_partition = (self.lb1_lra_relaxation +
+    euf_coupled_bonus).min(base_sound)
 
   // 6. LB6: GNN Calibrated Neural Value Lower Bound
   let sound_sup = self.lb1_lra_relaxation
@@ -453,7 +462,7 @@ pub fn QapIncrementalPruner::compute_incremental_lower_bound(
                   }
                 }
               }
-              if min_dist_kl < 1.0e14 {
+              if min_dist_kl < arith_infinity {
                 cost_ik = cost_ik + self.flow[i][j] * min_dist_kl
               }
             }

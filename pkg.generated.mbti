@@ -1,5 +1,5 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "username/omt_cdcl_solver"
+package "djrww/omt_cdcl_solver"
 
 import {
   "moonbitlang/core/debug",
@@ -43,6 +43,8 @@ pub fn morton_encode_2d(Int, Int) -> Int
 pub fn outer_monoid_compose(OuterMonoidElem, OuterMonoidElem) -> OuterMonoidElem
 
 pub fn poly_subtract_scaled_shifted(MultivariatePoly, MultivariatePoly, Double, Array[Int]) -> MultivariatePoly
+
+pub fn push_unique(Array[Int], Int) -> Unit
 
 pub fn reduce_poly_modulo_ideal(MultivariatePoly, Array[MultivariatePoly]) -> MultivariatePoly
 
@@ -306,6 +308,7 @@ pub(all) struct HomomorphicConservationIdeal {
 pub fn HomomorphicConservationIdeal::eval_clause_ideal_polynomial(Self, Clause, Array[TruthVal]) -> Double
 pub fn HomomorphicConservationIdeal::new(Int) -> Self
 pub fn HomomorphicConservationIdeal::verify_all_clauses_conserved(Self, Array[Clause], Array[TruthVal]) -> Bool
+pub fn HomomorphicConservationIdeal::verify_learnt_clause_blocks(Self, Clause, Array[TruthVal]) -> Bool
 pub fn HomomorphicConservationIdeal::verify_resolution_conservation(Self, Clause, Clause, Clause) -> Bool
 
 pub(all) struct HpaCongruenceClosure {
@@ -405,6 +408,9 @@ pub(all) struct LazySmtOmtSolver {
   lrb : LrbBrancher
   hybrid6 : Hybrid6DynamicLowerBound
   mut qap : QapIncrementalPruner
+  mut learnt_invariant_failures : Int
+  mut uncertified_witness_rejections : Int
+  mut axiom_certification_failures : Int
   opt_lemma_engine : AdaptiveOptimalLemmaEngine
   cac : CylindricalAlgebraicCovering
   conservation_ideal : HomomorphicConservationIdeal
@@ -414,6 +420,7 @@ pub(all) struct LazySmtOmtSolver {
   mut total_propagations : Int
 }
 pub fn LazySmtOmtSolver::add_clause(Self, Array[Int], Bool, AxiomOrigin) -> Int
+pub fn LazySmtOmtSolver::add_clause_with_lbd(Self, Array[Int], Bool, Int, AxiomOrigin) -> Int
 pub fn LazySmtOmtSolver::add_euf_constraint(Self, Int, Int, Int, Bool, Bool) -> Unit
 pub fn LazySmtOmtSolver::analyze_conflict_1uip(Self, Clause) -> (Array[Int], Int, Int, Array[Int], Array[Int])
 pub fn LazySmtOmtSolver::attach_qap_pruner(Self, QapIncrementalPruner) -> Unit
@@ -437,15 +444,20 @@ pub(all) struct LraLiaTheorySolver {
   base_ub : Array[Double]
   cur_lb : Array[Double]
   cur_ub : Array[Double]
-  lb_reason : Array[Int]
-  ub_reason : Array[Int]
+  lb_reasons : Array[Array[Int]]
+  ub_reasons : Array[Array[Int]]
   is_integer : Array[Bool]
   witness : Array[Double]
+  mut witness_certified : Bool
+  mut propagation_rounds : Int
+  mut witness_repair_rounds : Int
+  mut witness_improvement_rounds : Int
   constraints : Array[GuardedArithConstraint]
   mut farkas_conflicts : Int
   mut lia_cuts : Int
 }
 pub fn LraLiaTheorySolver::add_constraint(Self, Int, LinearTerm, ArithOp, Double, Bool) -> Unit
+pub fn LraLiaTheorySolver::is_witness_certified(Self, Array[TruthVal]) -> Bool
 pub fn LraLiaTheorySolver::new(Int, Array[Bool]) -> Self
 pub fn LraLiaTheorySolver::propagate_and_check(Self, Array[TruthVal], Array[Double], Int) -> Clause?
 pub fn LraLiaTheorySolver::set_var_domain(Self, Int, Double, Double) -> Unit
@@ -459,6 +471,7 @@ pub(all) struct LrbBrancher {
   participated : Array[Int]
   reason_side : Array[Int]
   saved_phase : Array[Bool]
+  phase_valid : Array[Bool]
 }
 pub fn LrbBrancher::new(Int) -> Self
 pub fn LrbBrancher::on_assign(Self, Int, Bool) -> Unit
@@ -632,6 +645,7 @@ pub(all) struct StrokeCluster {
   stroke_ids : Array[Int]
   mut merged_aabb : Aabb
   mut centroid : Vec2
+  mut mean_tangent : Vec2
   mut total_raw_vertices : Int
   mut total_simplified_vertices : Int
 }
@@ -672,12 +686,15 @@ pub(all) struct SvmKernelMapper {
   alpha_y : Array[Double]
   mut bias : Double
   c_regularization : Double
+  max_support_vectors : Int
+  mut evict_cursor : Int
 }
 pub fn SvmKernelMapper::decision_function(Self, Array[Double], Bool) -> Double
 pub fn SvmKernelMapper::eval_kernel(Self, Array[Double], Array[Double], Bool) -> Double
 pub fn SvmKernelMapper::fit_online_sample(Self, Array[Double], Double) -> Unit
 pub fn SvmKernelMapper::new(SvmKernelKind, Double) -> Self
 pub fn SvmKernelMapper::rkhs_spectral_margin_norm(Self) -> Double
+pub fn SvmKernelMapper::with_capacity(SvmKernelKind, Double, Int) -> Self
 
 pub(all) enum Term {
   Var(String, Int)

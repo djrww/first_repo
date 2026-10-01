@@ -23,8 +23,10 @@
 let arith_infinity : Double = 1.0e15
 
 ///|
-/// Default half-width of the arithmetic variable box when a problem does not state its
-/// own bounds. Bounds are refined by propagation, so this only has to be finite.
+/// Half-width of the "effectively unbounded" interval used by the interval-evaluation and
+/// CDN helpers when no finite box is available (`InnerSemigroupElem::neutral`,
+/// `interval_eval_poly`). It is *not* the default variable domain — that role belongs to
+/// `arith_default_lower_bound` / `arith_default_upper_bound`.
 let arith_initial_bound : Double = 1.0e12
 
 ///|
@@ -34,9 +36,22 @@ let arith_initial_bound : Double = 1.0e12
 let scan_infinity : Double = 1.0e18
 
 ///|
-/// Maximum distance the SDF ray marcher searches for an intersection before it reports
-/// a miss. Keeps a divergent ray from looping over the whole scene.
-let ray_max_distance : Double = 1.0e9
+/// "No shape is closer than this" sentinel used when baking the SDF texture atlas from a
+/// CSG union of shapes. It is deliberately finite so the bake stays representable; any real
+/// signed distance is smaller. (This package contains no ray marcher, so this value is not a
+/// ray-marching limit.)
+let sdf_bake_distance_sentinel : Double = 1.0e9
+
+///|
+/// Lower end of the default interval assigned to an arithmetic variable that never receives
+/// an explicit `set_var_domain` call. Problems whose variables live outside this interval
+/// must declare their own domains; the default is deliberately finite and tight so that a
+/// missing declaration cannot silently create an unbounded objective.
+let arith_default_lower_bound : Double = 0.0
+
+///|
+/// Upper end of the default arithmetic variable interval (see `arith_default_lower_bound`).
+let arith_default_upper_bound : Double = 100.0
 
 // ---------------------------------------------------------------------------
 // Tolerances
@@ -135,3 +150,33 @@ let gnn_embed_dim : Int = 6
 ///|
 /// Mixing weight of the SVM margin inside the neural branching utility score.
 let gnn_svm_mix : Double = 0.25
+
+// ---------------------------------------------------------------------------
+// LRB branching heuristic
+// ---------------------------------------------------------------------------
+
+///|
+/// Initial EMA learning rate of a fresh LRB variable.
+let lrb_ema_initial : Double = 0.15
+
+///|
+/// Weight of the LRB score in the fused variable-selection score
+/// (`0.70 * LRB + 0.30 * GNN/SVM`).
+let lrb_fuse_lrb_weight : Double = 0.70
+
+///|
+/// Weight of the GNN/SVM score in the fused variable-selection score.
+let lrb_fuse_gnn_weight : Double = 0.30
+
+///|
+/// Locality decay applied to the learning rate of not-yet-assigned variables on conflict.
+let lrb_locality_decay : Double = 0.95
+
+// ---------------------------------------------------------------------------
+// Vertex buffer layout
+// ---------------------------------------------------------------------------
+
+///|
+/// Number of interleaved `Double` slots per vertex in the flat VBO
+/// (x, y, u, v, r, g, b, a).
+let gpu_vertex_stride : Int = 8

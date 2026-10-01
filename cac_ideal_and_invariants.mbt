@@ -591,11 +591,38 @@ pub fn SurjectiveAxiomProjector::new() -> SurjectiveAxiomProjector {
 }
 
 ///|
-/// Map an AxiomOrigin to its canonical index in [0..8] and record surjective coverage.
+/// Structural well-formedness of a clause: no literal 0 (which the guard handling reads as
+/// "unconditional"), no duplicated literal, and no literal together with its negation.
+/// Such clauses cannot be used as proof lemmas and would corrupt LBD bookkeeping.
+fn is_well_formed_clause(lits : Array[Int]) -> Bool {
+  for i = 0; i < lits.length(); i = i + 1 {
+    let lit = lits[i]
+    if lit == 0 {
+      return false
+    }
+    for j = i + 1; j < lits.length(); j = j + 1 {
+      if lits[j] == lit || lits[j] == lit_neg(lit) {
+        return false
+      }
+    }
+  }
+  true
+}
+
+///|
+/// Certify a clause and record the certification event in the surjective coverage matrix.
+/// Certification is a real check with two parts: the clause must be structurally well-formed
+/// (`is_well_formed_clause`), and its stored conservation hash must still match a fresh
+/// recomputation over the stored literals — the latter catches a caller that mutates the
+/// literal array after `Clause::new`. Only then is the `AxiomOrigin` tag recorded under its
+/// canonical index in [0..8]; otherwise the caller's failure counter increases.
 pub fn SurjectiveAxiomProjector::certify_clause_origin(
   self : SurjectiveAxiomProjector,
   clause : Clause,
 ) -> Bool {
+  if !is_well_formed_clause(clause.lits) {
+    return false
+  }
   let expected_hash = compute_clause_conservation_hash(clause.lits)
   if clause.conservation_hash != expected_hash {
     return false

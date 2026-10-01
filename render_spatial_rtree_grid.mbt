@@ -667,6 +667,9 @@ pub(all) struct StrokeCluster {
   stroke_ids : Array[Int]
   mut merged_aabb : Aabb
   mut centroid : Vec2
+  /// Running average of the member strokes' unit tangents, used to pick the best-fitting
+  /// cluster among the candidates whose boxes overlap a new stroke.
+  mut mean_tangent : Vec2
   mut total_raw_vertices : Int
   mut total_simplified_vertices : Int
 }
@@ -687,8 +690,12 @@ pub fn StrokeClusterEngine::new(spatial_radius : Double) -> StrokeClusterEngine 
 }
 
 ///|
-/// Insert a `VectorStroke` into the best matching cluster (by AABB proximity & tangent affinity)
-/// or allocate a new cluster if no existing cluster is within `spatial_radius`.
+/// Insert a `VectorStroke` into the best matching cluster (by AABB proximity, then tangent
+/// affinity) or allocate a new cluster if no existing cluster is within `spatial_radius`.
+/// The proximity test of the inflated boxes decides which clusters are candidates; among
+/// those candidates the one whose accumulated `mean_tangent` best agrees with the stroke's
+/// own tangent is chosen, with the overlap area as a tie-break. That is what makes the
+/// clustering spatial-directional rather than purely spatial.
 pub fn StrokeClusterEngine::add_stroke_to_clusters(
   self : StrokeClusterEngine,
   stroke : VectorStroke,
@@ -698,23 +705,44 @@ pub fn StrokeClusterEngine::add_stroke_to_clusters(
     x: 0.5 * (stroke.aabb.min_x + stroke.aabb.max_x),
     y: 0.5 * (stroke.aabb.min_y + stroke.aabb.max_y),
   }
+  let mut best_idx = -1
+  let mut best_affinity = -2.0
+  let mut best_overlap = -1.0
   for i = 0; i < self.clusters.length(); i = i + 1 {
     if self.clusters[i].merged_aabb.intersects(expanded_box) {
-      self.clusters[i].stroke_ids.push(stroke.id)
-      self.clusters[i].merged_aabb = self.clusters[i].merged_aabb.union(
-        stroke.aabb,
-      )
-      let k = self.clusters[i].stroke_ids.length().to_double()
-      self.clusters[i].centroid = {
-        x: (self.clusters[i].centroid.x * (k - 1.0) + stroke_center.x) / k,
-        y: (self.clusters[i].centroid.y * (k - 1.0) + stroke_center.y) / k,
+      let overlap = match stroke.aabb.intersection(self.clusters[i].merged_aabb) {
+        Some(box) => box.area()
+        None => 0.0
       }
-      self.clusters[i].total_raw_vertices = self.clusters[i].total_raw_vertices +
-        stroke.raw_points.length()
-      self.clusters[i].total_simplified_vertices = self.clusters[i].total_simplified_vertices +
-        stroke.simplified_points.length()
-      return self.clusters[i].cluster_id
+      let affinity = stroke.mean_tangent.x * self.clusters[i].mean_tangent.x +
+        stroke.mean_tangent.y * self.clusters[i].mean_tangent.y
+      if affinity > best_affinity + tol_eps ||
+        ((affinity - best_affinity).abs() <= tol_eps && overlap > best_overlap) {
+        best_affinity = affinity
+        best_overlap = overlap
+        best_idx = i
+      }
     }
+  }
+  if best_idx >= 0 {
+    self.clusters[best_idx].stroke_ids.push(stroke.id)
+    self.clusters[best_idx].merged_aabb = self.clusters[best_idx].merged_aabb.union(
+      stroke.aabb,
+    )
+    let k = self.clusters[best_idx].stroke_ids.length().to_double()
+    self.clusters[best_idx].centroid = {
+      x: (self.clusters[best_idx].centroid.x * (k - 1.0) + stroke_center.x) / k,
+      y: (self.clusters[best_idx].centroid.y * (k - 1.0) + stroke_center.y) / k,
+    }
+    self.clusters[best_idx].mean_tangent = {
+      x: (self.clusters[best_idx].mean_tangent.x * (k - 1.0) + stroke.mean_tangent.x) / k,
+      y: (self.clusters[best_idx].mean_tangent.y * (k - 1.0) + stroke.mean_tangent.y) / k,
+    }
+    self.clusters[best_idx].total_raw_vertices = self.clusters[best_idx].total_raw_vertices +
+      stroke.raw_points.length()
+    self.clusters[best_idx].total_simplified_vertices = self.clusters[best_idx].total_simplified_vertices +
+      stroke.simplified_points.length()
+    return self.clusters[best_idx].cluster_id
   }
   let cid = self.clusters.length()
   self.clusters.push({
@@ -722,6 +750,7 @@ pub fn StrokeClusterEngine::add_stroke_to_clusters(
     stroke_ids: [stroke.id],
     merged_aabb: stroke.aabb,
     centroid: stroke_center,
+    mean_tangent: stroke.mean_tangent,
     total_raw_vertices: stroke.raw_points.length(),
     total_simplified_vertices: stroke.simplified_points.length(),
   })
