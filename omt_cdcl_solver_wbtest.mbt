@@ -101,7 +101,7 @@ test "lrb_erwa_reason_side_locality_and_hybrid6_bounds" {
     [1.2, 2.1],
     [5.0, 6.0],
     [2.0, 3.0],
-    true,
+    [true, true],
     12.0,
     [(1, 3)],
     gnn,

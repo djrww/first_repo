@@ -20,7 +20,14 @@ pub(all) struct SvmKernelMapper {
   alpha_y : Array[Double] // signed dual weights alpha_i * y_i
   mut bias : Double
   c_regularization : Double
+  max_support_vectors : Int
+  /// Round-robin eviction cursor: allows the bounded bank to keep absorbing new evidence.
+  mut evict_cursor : Int
 }
+
+///|
+/// Default cap on the support-vector bank, bounding the online-learning overhead per conflict.
+let default_support_vector_capacity : Int = 32
 
 ///|
 /// Create a new SVM Kernel Mapper.
@@ -28,7 +35,27 @@ pub fn SvmKernelMapper::new(
   kernel : SvmKernelKind,
   c_regularization : Double,
 ) -> SvmKernelMapper {
-  { kernel, support_vectors: [], alpha_y: [], bias: 0.0, c_regularization, }
+  SvmKernelMapper::with_capacity(
+    kernel, c_regularization, default_support_vector_capacity,
+  )
+}
+
+///|
+/// Create a new SVM Kernel Mapper with an explicit support-vector bank capacity.
+pub fn SvmKernelMapper::with_capacity(
+  kernel : SvmKernelKind,
+  c_regularization : Double,
+  max_support_vectors : Int,
+) -> SvmKernelMapper {
+  {
+    kernel,
+    support_vectors: [],
+    alpha_y: [],
+    bias: 0.0,
+    c_regularization,
+    max_support_vectors: max_support_vectors.max(1),
+    evict_cursor: 0,
+  }
 }
 
 ///|
@@ -99,21 +126,23 @@ pub fn SvmKernelMapper::fit_online_sample(
     let step = (1.0 - margin).clamp(min=0.05, max=self.c_regularization)
     let signed_alpha = label_y * step
     // Cap support vector bank size for bounded overhead
-    if self.support_vectors.length() < 32 {
+    if self.support_vectors.length() < self.max_support_vectors {
       self.support_vectors.push(x.copy())
       self.alpha_y.push(signed_alpha)
     } else {
-      // Replace oldest or merge into closest support vector
-      let idx = self.support_vectors.length() - 1
+      // True FIFO eviction: advance the cursor on every replacement so all bank slots keep
+      // being refreshed, instead of only overwriting the last one.
+      let idx = self.evict_cursor % self.max_support_vectors
       self.support_vectors[idx] = x.copy()
       self.alpha_y[idx] = signed_alpha
+      self.evict_cursor = (self.evict_cursor + 1) % self.max_support_vectors
     }
     self.bias = self.bias + 0.1 * signed_alpha
   }
 }
 
 ///|
-/// Compute the RKHS dual norm ||w||_H^2 = sum_{i,j} alpha_i y_i alpha_j y_j K(s_i, s_j)
+/// Compute the RKHS dual norm ||w||_H = sqrt(sum_{i,j} alpha_i y_i alpha_j y_j K(s_i, s_j))
 /// used as a spectral margin lower-bound contribution in Hybrid-6 dynamic pruning.
 pub fn SvmKernelMapper::rkhs_spectral_margin_norm(
   self : SvmKernelMapper,

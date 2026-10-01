@@ -114,6 +114,18 @@ pub fn compute_clause_conservation_hash(lits : Array[Int]) -> Int {
 }
 
 ///|
+/// Push `value` into `arr` only when it is not already present, keeping generated
+/// conflict clauses free of duplicate literals.
+pub fn push_unique(arr : Array[Int], value : Int) -> Unit {
+  for x in arr {
+    if x == value {
+      return
+    }
+  }
+  arr.push(value)
+}
+
+///|
 /// Create a new certified Clause.
 pub fn Clause::new(
   id : Int,

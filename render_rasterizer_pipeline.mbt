@@ -41,6 +41,14 @@ pub fn Framebuffer::clear_scissor_rect(
   self : Framebuffer,
   scissor : Aabb,
 ) -> Int {
+  // A scissor that lies fully outside the framebuffer must clear nothing; clamping its
+  // coordinates directly would silently fold it onto row/column 0.
+  if scissor.max_x < 0.0 ||
+    scissor.max_y < 0.0 ||
+    scissor.min_x >= self.width.to_double() ||
+    scissor.min_y >= self.height.to_double() {
+    return 0
+  }
   let x0 = scissor.min_x.floor().to_int().clamp(min=0, max=self.width - 1)
   let y0 = scissor.min_y.floor().to_int().clamp(min=0, max=self.height - 1)
   let x1 = scissor.max_x.ceil().to_int().clamp(min=0, max=self.width - 1)
@@ -567,7 +575,9 @@ pub fn IncrementalRenderEngine::render_incremental_frame(
   let total_screen_area = (self.width * self.height).max(1).to_double()
   let dirty_ratio = (dirty_area / total_screen_area).clamp(min=0.0, max=1.0)
 
-  // 4. Local Culling + Local Scissor Rasterization per Dirty Rectangle
+  // 4. Local Culling + Local Scissor Rasterization per Dirty Rectangle.
+  // The scissor only clips work done while its dirty rectangle is being repainted; it is a
+  // work-reduction window for this frame, not a persistent stencil buffer.
   let drawn_map = Array::make(self.primitives.length(), false)
   for dr in dirty_rects {
     let _ = self.framebuffer.clear_scissor_rect(dr)

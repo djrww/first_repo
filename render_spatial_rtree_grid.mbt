@@ -250,7 +250,22 @@ pub fn RTree::update_primitive_aabb(
       for i = 0; i < self.nodes[nid].entries.length(); i = i + 1 {
         if self.nodes[nid].entries[i].primitive_id == primitive_id {
           self.nodes[nid].entries[i].aabb = new_aabb
-          self.adjust_tree(nid, -1)
+          // Propagate the change upwards directly through the parent chain rather than
+          // rescanning the whole tree.
+          let mut cur = nid
+          self.recompute_node_aabb(cur)
+          let mut parent = self.nodes[cur].parent_id
+          while parent != -1 {
+            for e = 0; e < self.nodes[parent].entries.length(); e = e + 1 {
+              if self.nodes[parent].entries[e].child_node_id == cur {
+                self.nodes[parent].entries[e].aabb = self.nodes[cur].aabb
+                break
+              }
+            }
+            self.recompute_node_aabb(parent)
+            cur = parent
+            parent = self.nodes[parent].parent_id
+          }
           return true
         }
       }
@@ -324,7 +339,10 @@ pub(all) struct SparseSpatialGrid {
   tile_size : Double
   num_buckets : Int
   buckets : Array[Array[SparseTileCell]]
+  /// Number of cells that currently hold at least one primitive.
   mut active_tile_count : Int
+  /// Total number of cells ever allocated (telemetry only).
+  mut total_cells_allocated : Int
 }
 
 ///|
@@ -343,6 +361,7 @@ pub fn SparseSpatialGrid::new(
     num_buckets: nb,
     buckets,
     active_tile_count: 0,
+    total_cells_allocated: 0,
   }
 }
 
@@ -379,6 +398,7 @@ fn SparseSpatialGrid::get_or_create_cell(
     dirty: true,
   })
   self.active_tile_count = self.active_tile_count + 1
+  self.total_cells_allocated = self.total_cells_allocated + 1
   (b_idx, idx)
 }
 
@@ -427,20 +447,34 @@ pub fn SparseSpatialGrid::remove_primitive(
       let mkey = morton_encode_2d(tx, ty)
       let b_idx = (mkey & 0x7FFFFFFF) % self.num_buckets
       let bucket = self.buckets[b_idx]
+      let mut slot = -1
       for i = 0; i < bucket.length(); i = i + 1 {
         if bucket[i].tile_x == tx && bucket[i].tile_y == ty {
-          let kept : Array[Int] = []
-          for p in bucket[i].primitives {
-            if p != primitive_id {
-              kept.push(p)
-            }
-          }
-          bucket[i].primitives.clear()
-          for p in kept {
-            bucket[i].primitives.push(p)
-          }
-          bucket[i].dirty = true
+          slot = i
         }
+      }
+      if slot < 0 {
+        continue
+      }
+      let kept : Array[Int] = []
+      for p in bucket[slot].primitives {
+        if p != primitive_id {
+          kept.push(p)
+        }
+      }
+      bucket[slot].primitives.clear()
+      for p in kept {
+        bucket[slot].primitives.push(p)
+      }
+      if bucket[slot].primitives.length() == 0 {
+        // Release the emptied cell so the live-tile telemetry reflects reality and the
+        // bucket does not accumulate dead cells across frames.
+        let last = bucket.length() - 1
+        bucket[slot] = bucket[last]
+        let _ = bucket.pop()
+        self.active_tile_count = (self.active_tile_count - 1).max(0)
+      } else {
+        bucket[slot].dirty = true
       }
     }
   }
