@@ -159,7 +159,10 @@ pub fn run_cac_ideal_and_conservation_scenario() -> (Double, Bool, Bool, Int) {
   let cac = CylindricalAlgebraicCovering::new(2)
   cac.add_ideal_generator(g1)
   cac.add_ideal_generator(g2)
-  // Require f(x_0, x_1) <= 10.0 guarded by literal +1 (impossible since f == 15 mod I!)
+  // Require f(x_0, x_1) <= 10.0 guarded by literal +1.
+  // The reduction of f modulo <g_1, g_2> is the non-zero constant 15, which decides the
+  // relation exactly on the whole ideal variety: f <= 10 is unsatisfiable everywhere, so
+  // the conflict is a proof (no sampling is involved).
   cac.add_constraint(f, Le, 10.0, 1)
   let cac_conflict = cac.check_cylindrical_covering(
     [0.0, 0.0],
@@ -249,7 +252,7 @@ pub fn run_lra_vs_lia_integrality_cut_scenario() -> OmtSolveResult {
 /// - Sparse Spatial Grid (Morton Z-order tile hashing)
 /// - Stroke Clustering (RDP polyline simplification + spatial-directional clustering)
 /// - Dirty Rectangle Detection & Coalescing
-/// - Zero-Copy VBO/IBO Arena & In-Place Sub-Buffer Mutation
+/// - Flat VBO/IBO Arena & In-Place Sub-Buffer Mutation
 /// - SDF Texture Atlas (Bilinear sampling + smoothstep contour shader)
 /// - 4x RGSS Anti-Aliased Full & Local Scissor Rasterization
 /// Returns `(frame1_metrics, frame2_incremental_metrics, topo_splits, sdf_samples)`.

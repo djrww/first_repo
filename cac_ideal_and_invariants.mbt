@@ -18,6 +18,98 @@ pub(all) struct MultivariatePoly {
   terms : Array[PolyMonomial]
 }
 
+
+///|
+/// Integer power of `x` for `exponent >= 0`.
+fn pow_int(x : Double, exponent : Int) -> Double {
+  let mut acc = 1.0
+  for _i = 0; _i < exponent; _i = _i + 1 {
+    acc = acc * x
+  }
+  acc
+}
+
+///|
+/// Multiply two intervals `[a0, a1] * [b0, b1]`, returning the enclosing interval.
+fn interval_mul(a : (Double, Double), b : (Double, Double)) -> (Double, Double) {
+  let (a0, a1) = a
+  let (b0, b1) = b
+  let p0 = a0 * b0
+  let p1 = a0 * b1
+  let p2 = a1 * b0
+  let p3 = a1 * b1
+  (p0.min(p1).min(p2).min(p3), p0.max(p1).max(p2).max(p3))
+}
+
+///|
+/// Sound interval evaluation of a polynomial over a box: the returned interval encloses
+/// every value the polynomial takes on the box, so any violation proven from it holds for
+/// every point of the box (no sampling involved).
+fn interval_eval_poly(
+  poly : MultivariatePoly,
+  box_lb : Array[Double],
+  box_ub : Array[Double],
+) -> (Double, Double) {
+  let mut acc_min = 0.0
+  let mut acc_max = 0.0
+  for term in poly.terms {
+    let mut lo = term.coeff
+    let mut hi = term.coeff
+    for i = 0; i < term.exponents.length(); i = i + 1 {
+      let e = term.exponents[i]
+      if e <= 0 {
+        continue
+      }
+      let mut lb = if i < box_lb.length() { box_lb[i] } else { -arith_initial_bound }
+      let mut ub = if i < box_ub.length() { box_ub[i] } else { arith_initial_bound }
+      if lb > ub {
+        let tmp = lb
+        lb = ub
+        ub = tmp
+      }
+      let p_lo = if e % 2 == 0 && lb <= 0.0 && ub >= 0.0 {
+        0.0
+      } else {
+        let m = lb.abs().min(ub.abs())
+        pow_int(m, e)
+      }
+      let p_hi = pow_int(lb.abs().max(ub.abs()), e)
+      let (m_lo, m_hi) = interval_mul((lo, hi), (p_lo, p_hi))
+      lo = m_lo
+      hi = m_hi
+    }
+    acc_min = acc_min + lo
+    acc_max = acc_max + hi
+  }
+  (acc_min, acc_max)
+}
+
+///|
+/// Whether the normalized polynomial consists of exactly one constant monomial.
+fn is_constant_poly(poly : MultivariatePoly) -> Bool {
+  if poly.terms.length() != 1 {
+    return false
+  }
+  for e in poly.terms[0].exponents {
+    if e != 0 {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// Evaluate whether the value `v` satisfies `v op rhs`.
+fn eval_arith_op(v : Double, op : ArithOp, rhs : Double) -> Bool {
+  match op {
+    Le => v <= rhs + 1.0e-7
+    Ge => v >= rhs - 1.0e-7
+    Eq => (v - rhs).abs() <= poly_nonzero_tol
+    Lt => v < rhs - 1.0e-7
+    Gt => v > rhs + 1.0e-7
+  }
+}
+
 ///|
 /// Compare two exponent vectors using Graded Lexicographic (GrLex) order.
 /// Returns 1 if a > b, -1 if a < b, 0 if equal.
@@ -157,7 +249,9 @@ pub fn reduce_poly_modulo_ideal(
   let mut cur = f.normalize()
   let remainder_terms : Array[PolyMonomial] = []
   let mut steps = 0
-  while cur.terms.length() > 0 && steps < 64 {
+  // Multivariate division terminates because every reduction step strictly decreases the
+  // leading monomial in the GrLex well-order; the limit is a defensive guard only.
+  while cur.terms.length() > 0 && steps < poly_reduction_step_limit {
     steps = steps + 1
     let lt = cur.terms[0]
     let mut reduced = false
@@ -273,22 +367,16 @@ pub fn CylindricalAlgebraicCovering::add_constraint(
 }
 
 ///|
-/// Check whether value `v` satisfies `v op rhs`.
-fn eval_arith_op(v : Double, op : ArithOp, rhs : Double) -> Bool {
-  match op {
-    Le => v <= rhs + 1.0e-7
-    Ge => v >= rhs - 1.0e-7
-    Eq => (v - rhs).abs() <= 1.0e-7
-    Lt => v < rhs - 1.0e-7
-    Gt => v > rhs + 1.0e-7
-  }
-}
-
-///|
-/// Execute Ring-Lifted Cylindrical Algebraic Covering & Ideal Reduction over the box
-/// `[var_lb[k], var_ub[k]]` around `base_sample`.
-/// Returns `Some(conflict_clause)` if a cylindrical level is completely covered by offending
-/// intervals after ideal reduction, or `None` if a feasible lifted cylinder witness exists.
+/// Execute Ring-Lifted Cylindrical Algebraic Covering (CAC) ideal reduction over the box
+/// `[var_lb[k], var_ub[k]]`.
+/// Returns `Some(conflict_clause)` only when the violation is *provable* for every point of
+/// the box:
+///   * the ideal reduction of the constraint polynomial is a non-zero constant, so the
+///     relation is decided exactly on the whole variety cut out by the ideal generators, or
+///   * sound interval arithmetic on the reduced polynomial proves the relation violated
+///     everywhere on the box.
+/// Point sampling alone never produces a conflict: a finite sample cannot establish that a
+/// whole cylinder is covered, so an inconclusive cell is reported as `None`.
 pub fn CylindricalAlgebraicCovering::check_cylindrical_covering(
   self : CylindricalAlgebraicCovering,
   base_sample : Array[Double],
@@ -296,72 +384,52 @@ pub fn CylindricalAlgebraicCovering::check_cylindrical_covering(
   var_ub : Array[Double],
   next_clause_id : Int,
 ) -> Clause? {
+  let _ = base_sample
   if self.active_constraints.length() == 0 {
     return None
   }
-  let sample = base_sample.copy()
-  // Lift level by level k = 0 .. num_arith_vars - 1
+  // Sound box for the interval reasoning
+  let box_lb : Array[Double] = []
+  let box_ub : Array[Double] = []
   for k = 0; k < self.num_arith_vars; k = k + 1 {
-    let lb_k = if k < var_lb.length() { var_lb[k] } else { -10.0 }
-    let ub_k = if k < var_ub.length() { var_ub[k] } else { 10.0 }
-    if lb_k > ub_k + 1.0e-9 {
+    let lb_k = if k < var_lb.length() { var_lb[k] } else { -arith_initial_bound }
+    let ub_k = if k < var_ub.length() { var_ub[k] } else { arith_initial_bound }
+    if lb_k > ub_k + tol_eps {
       return None
     }
-    // Sample grid along cylinder fiber at level k (5 cell checkpoints: lb, q1, mid, q3, ub)
-    let grid : Array[Double] = [
-      lb_k,
-      lb_k + 0.25 * (ub_k - lb_k),
-      0.5 * (lb_k + ub_k),
-      lb_k + 0.75 * (ub_k - lb_k),
-      ub_k,
-    ]
-    let mut found_feasible_fiber_point = false
-    let covering_reasons : Array[Int] = []
-
-    for pt in grid {
-      if k < sample.length() {
-        sample[k] = pt
-      }
-      let mut point_ok = true
-      for item in self.active_constraints {
-        let (poly, op, rhs, rlit) = item
-        let reduced_poly = reduce_poly_modulo_ideal(poly, self.ideal_generators)
-        self.ideal_reductions_count = self.ideal_reductions_count + 1
-        let val = reduced_poly.eval(sample)
-        if !eval_arith_op(val, op, rhs) {
-          point_ok = false
-          if rlit != 0 {
-            let mut exists = false
-            for r in covering_reasons {
-              if r == rlit {
-                exists = true
-              }
-            }
-            if !exists {
-              covering_reasons.push(rlit)
-            }
-          }
-        }
-      }
-      if point_ok {
-        found_feasible_fiber_point = true
-        break
+    box_lb.push(lb_k)
+    box_ub.push(ub_k)
+  }
+  for item in self.active_constraints {
+    let (poly, op, rhs, rlit) = item
+    let reduced = reduce_poly_modulo_ideal(poly, self.ideal_generators)
+    self.ideal_reductions_count = self.ideal_reductions_count + 1
+    let proven_violation = if is_constant_poly(reduced) {
+      // The relation is decided exactly on the whole ideal variety
+      !eval_arith_op(reduced.terms[0].coeff, op, rhs)
+    } else {
+      let (min_val, max_val) = interval_eval_poly(reduced, box_lb, box_ub)
+      match op {
+        Le => min_val > rhs + 1.0e-7
+        Lt => min_val > rhs - 1.0e-7
+        Ge => max_val < rhs - 1.0e-7
+        Gt => max_val < rhs + 1.0e-7
+        Eq => min_val > rhs + poly_nonzero_tol || max_val < rhs - poly_nonzero_tol
       }
     }
-
-    if !found_feasible_fiber_point && covering_reasons.length() > 0 {
+    if proven_violation {
       self.cac_pruned_cells = self.cac_pruned_cells + 1
       let conflict_lits : Array[Int] = []
-      for r in covering_reasons {
-        conflict_lits.push(lit_neg(r))
+      if rlit != 0 {
+        conflict_lits.push(lit_neg(rlit))
       }
       return Some(
         Clause::new(
           next_clause_id,
           conflict_lits,
           true,
-          conflict_lits.length(),
-          CacIdealReductionAxiom(k),
+          conflict_lits.length().max(1),
+          CacIdealReductionAxiom(0),
         ),
       )
     }
@@ -457,10 +525,29 @@ pub fn HomomorphicConservationIdeal::verify_resolution_conservation(
     let p2 = self.eval_clause_ideal_polynomial(c2, assign)
     let pres = self.eval_clause_ideal_polynomial(resolvent, assign)
     // If both c1 and c2 vanish in the ideal (satisfied), resolvent must also vanish!
-    if p1.abs() < 1.0e-9 && p2.abs() < 1.0e-9 {
-      if pres.abs() > 1.0e-9 {
+    if p1.abs() < tol_eps && p2.abs() < tol_eps {
+      if pres.abs() > tol_eps {
         return false
       }
+    }
+  }
+  self.verified_resolutions = self.verified_resolutions + 1
+  true
+}
+
+///|
+/// Verify the CDCL 1-UIP learnt-clause invariant: immediately after conflict analysis and
+/// before backjumping, every literal of a sound 1-UIP learnt clause is falsified by the
+/// current assignment. A clause failing this check is not entailed by the analysed
+/// conflict and must not be added to the clause database.
+pub fn HomomorphicConservationIdeal::verify_learnt_clause_blocks(
+  self : HomomorphicConservationIdeal,
+  learnt_clause : Clause,
+  values : Array[TruthVal],
+) -> Bool {
+  for lit in learnt_clause.lits {
+    if !is_lit_false(lit, values) {
+      return false
     }
   }
   self.verified_resolutions = self.verified_resolutions + 1
@@ -476,7 +563,7 @@ pub fn HomomorphicConservationIdeal::verify_all_clauses_conserved(
 ) -> Bool {
   for c in clauses {
     let val = self.eval_clause_ideal_polynomial(c, model)
-    if val.abs() > 1.0e-6 {
+    if val.abs() > poly_nonzero_tol {
       return false
     }
     self.verified_clauses = self.verified_clauses + 1
@@ -530,6 +617,24 @@ pub fn SurjectiveAxiomProjector::certify_clause_origin(
 }
 
 ///|
+/// Certified-clause count per `AxiomOrigin` category, in declaration order
+/// (`ProblemInput` first, `LrbOptimalLemma` last). This is the read side of the coverage
+/// array; without it the counters were accumulated but never observable.
+pub fn SurjectiveAxiomProjector::schema_coverage_report(
+  self : SurjectiveAxiomProjector,
+) -> Array[Int] {
+  self.schema_coverage.copy()
+}
+
+///|
+/// Total number of clauses that passed origin + conservation-hash certification.
+pub fn SurjectiveAxiomProjector::certified_clause_count(
+  self : SurjectiveAxiomProjector,
+) -> Int {
+  self.total_certified_clauses
+}
+
+///|
 /// Perform Superposed Cooperative Exhaustive Upper-Bound Resolution Constraint Projection:
 /// Given a linear objective `bool_obj_weights`, an upper bound `ub_limit`, and current clauses,
 /// projects minimal forbidden positive-cost variable pairs/triples whose combined cost exceeds `ub_limit`,
@@ -545,7 +650,7 @@ pub fn SurjectiveAxiomProjector::project_upper_bound_clauses(
   let n = bool_obj_weights.length() - 1
   // 1. Single variables exceeding ub_limit
   for v = 1; v <= n; v = v + 1 {
-    if bool_obj_weights[v] >= ub_limit - 1.0e-9 {
+    if bool_obj_weights[v] >= ub_limit - tol_eps {
       let c = Clause::new(
         cid,
         [mk_lit(v, false)],
@@ -562,10 +667,10 @@ pub fn SurjectiveAxiomProjector::project_upper_bound_clauses(
   // 2. Superposed pairwise exhaustive upper-bound projection: w_u + w_v >= ub_limit
   for u = 1; u <= n; u = u + 1 {
     let wu = bool_obj_weights[u]
-    if wu > 0.0 && wu < ub_limit - 1.0e-9 {
+    if wu > 0.0 && wu < ub_limit - tol_eps {
       for v = u + 1; v <= n; v = v + 1 {
         let wv = bool_obj_weights[v]
-        if wv > 0.0 && wv < ub_limit - 1.0e-9 && wu + wv >= ub_limit - 1.0e-9 {
+        if wv > 0.0 && wv < ub_limit - tol_eps && wu + wv >= ub_limit - tol_eps {
           let c = Clause::new(
             cid,
             [mk_lit(u, false), mk_lit(v, false)],

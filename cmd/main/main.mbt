@@ -35,8 +35,16 @@ fn main {
   println(
     "    - Conservation Ideal Verified    : \{res1.conservation_ideal_verified}",
   )
+  println("    - Surjective Axiom Clauses Cert. : \{res1.surjective_axiom_certified_clauses}")
+  println("    - Axiom Certification Failures   : \{res1.axiom_certification_failures}")
+  let mut covered_categories = 0
+  for c in res1.axiom_schema_coverage {
+    if c > 0 {
+      covered_categories = covered_categories + 1
+    }
+  }
   println(
-    "    - Surjective Axiom Clauses Cert. : \{res1.surjective_axiom_certified_clauses}",
+    "    - Axiom Schema Coverage          : \{covered_categories} / \{res1.axiom_schema_coverage.length()} categories",
   )
 
   // 2. Run Scenario 2: QAP Incremental Discrete Pruning + Dual-Layer CDN + LRB Hybrid-6
@@ -103,7 +111,7 @@ fn main {
     "    - Frame 2 Local Pixels Shaded    : \{f2.pixels_shaded_in_frame} px (4x RGSS Subsamples: \{f2.subsamples_evaluated_in_frame})",
   )
   println(
-    "    - Zero-Copy VBO In-Place Patches : \{f2.zero_copy_in_place_updates}",
+    "    - VBO In-Place Buffer Patches    : \{f2.in_place_buffer_updates}",
   )
   println("    - SDF Bilinear Texture Samples   : \{sdf_samples}")
   println(

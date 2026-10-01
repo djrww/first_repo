@@ -142,14 +142,8 @@ fn HpaCongruenceClosure::collect_app_congruence_reasons(
         if args1[i] != args2[i] {
           let sub_reasons = self.explain_path(args1[i], args2[i])
           for r in sub_reasons {
-            let mut exists = false
-            for e in out_reasons {
-              if e == r {
-                exists = true
-              }
-            }
-            if !exists && r != 0 {
-              out_reasons.push(r)
+            if r != 0 {
+              push_unique(out_reasons, r)
             }
           }
         }
@@ -205,19 +199,12 @@ pub fn HpaCongruenceClosure::explain_path(
   }
   let reasons : Array[Int] = []
   if !found {
-    // Fallback: include all active positive proof reasons
+    // Fallback: no path was recorded (should not happen for merged terms), so return a
+    // sound superset of the active positive proof reasons rather than a wrong minimal set.
     for edge in self.proof_edges {
       let (_, _, r) = edge
       if r != 0 {
-        let mut seen = false
-        for x in reasons {
-          if x == r {
-            seen = true
-          }
-        }
-        if !seen {
-          reasons.push(r)
-        }
+        push_unique(reasons, r)
       }
     }
     return reasons
@@ -227,15 +214,7 @@ pub fn HpaCongruenceClosure::explain_path(
     let p = prev_node[cur]
     let r = prev_reason[cur]
     if r != 0 {
-      let mut seen = false
-      for x in reasons {
-        if x == r {
-          seen = true
-        }
-      }
-      if !seen {
-        reasons.push(r)
-      }
+      push_unique(reasons, r)
     } else if p != -1 {
       self.collect_app_congruence_reasons(p, cur, reasons)
     }
@@ -296,13 +275,13 @@ pub fn HpaCongruenceClosure::propagate_star_closure(
     let (u, v, neq_reason_lit) = diseq
     if self.find(u) == self.find(v) {
       let eq_reasons = self.explain_path(u, v)
+      // Deduplicate: the guard literal may justify several congruence steps, and a clause
+      // with repeated literals would corrupt LBD bookkeeping and conservation hashing.
       let conflict_lits : Array[Int] = []
       for r in eq_reasons {
-        conflict_lits.push(lit_neg(r))
+        push_conflict_reason(conflict_lits, r)
       }
-      if neq_reason_lit != 0 {
-        conflict_lits.push(lit_neg(neq_reason_lit))
-      }
+      push_conflict_reason(conflict_lits, neq_reason_lit)
       return Some(conflict_lits)
     }
   }

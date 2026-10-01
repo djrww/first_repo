@@ -101,7 +101,7 @@ test "lrb_erwa_reason_side_locality_and_hybrid6_bounds" {
     [1.2, 2.1],
     [5.0, 6.0],
     [2.0, 3.0],
-    true,
+    [true, true],
     12.0,
     [(1, 3)],
     gnn,
@@ -143,6 +143,12 @@ test "spoly_and_surjective_axiom_upper_bound_projection" {
   // v3 (weight 9.0 >= 8.5) gets unit clause [-3]; pair (v1, v2) (4+5=9 >= 8.5) gets binary clause [-1, -2]
   assert_eq(projected_clauses.length(), 2)
   assert_eq(proj.upper_bound_projections, 2)
+  // The per-category coverage counters are now readable, and every projected clause is
+  // certified exactly once (all of them carry AxiomOrigin::LrbOptimalLemma).
+  let coverage = proj.schema_coverage_report()
+  assert_eq(coverage.length(), 9)
+  assert_eq(coverage[8], 2) // LrbOptimalLemma category
+  assert_eq(proj.certified_clause_count(), 2)
 }
 
 ///|
@@ -208,14 +214,14 @@ test "rtree_sparse_grid_stroke_clustering_and_dirty_rect_coalescing" {
 
 ///|
 test "zero_copy_vbo_arena_sdf_atlas_and_shaders" {
-  let arena = ZeroCopyVertexArena::new()
+  let arena = FlatVertexArena::new()
   let col = ColorRgba::new(0.2, 0.6, 1.0, 1.0)
   let verts : Array[GpuVertex] = [
     { x: 0.0, y: 0.0, u: 0.0, v: 0.0, color: col, },
     { x: 10.0, y: 0.0, u: 1.0, v: 0.0, color: col, },
     { x: 10.0, y: 10.0, u: 1.0, v: 1.0, color: col, },
   ]
-  let slice = arena.allocate_mesh_zero_copy(verts, [0, 1, 2])
+  let slice = arena.allocate_mesh(verts, [0, 1, 2])
   let moved_slice = arena.translate_slice_in_place(slice, 5.0, 7.0)
   let aabb = arena.compute_slice_aabb(moved_slice)
   assert_eq(aabb.min_x, 5.0)

@@ -70,6 +70,10 @@ pub(all) struct Aabb {
   max_y : Double
 } derive(Eq, @debug.Debug)
 pub fn Aabb::area(Self) -> Double
+pub fn Aabb::from_points(Array[Vec2]) -> Aabb?
+
+pub fn Aabb::union_all(Array[Aabb]) -> Aabb?
+
 pub fn Aabb::equal(Self, Self) -> Bool
 pub fn Aabb::inflate(Self, Double) -> Self
 pub fn Aabb::intersection(Self, Self) -> Self?
@@ -238,7 +242,7 @@ pub(all) struct FrameRenderMetrics {
   primitives_locally_culled : Int
   pixels_shaded_in_frame : Int
   subsamples_evaluated_in_frame : Int
-  zero_copy_in_place_updates : Int
+  in_place_buffer_updates : Int
   active_sparse_tiles : Int
   stroke_clusters_count : Int
   topology_vertices : Int
@@ -256,7 +260,7 @@ pub(all) struct Framebuffer {
 pub fn Framebuffer::clear_scissor_rect(Self, Aabb) -> Int
 pub fn Framebuffer::get_pixel(Self, Int, Int) -> ColorRgba
 pub fn Framebuffer::new(Int, Int, ColorRgba) -> Self
-pub fn Framebuffer::rasterize_slice_zero_copy_local(Self, ZeroCopyVertexArena, ZeroCopyBufferSlice, Affine2D, FragmentShaderProgram, SdfTextureAtlas, Aabb) -> Int
+pub fn Framebuffer::rasterize_slice_local(Self, FlatVertexArena, ArenaBufferSlice, Affine2D, FragmentShaderProgram, SdfTextureAtlas, Aabb) -> Int
 pub fn Framebuffer::rasterize_triangle_local_aa(Self, GpuVertex, GpuVertex, GpuVertex, FragmentShaderProgram, SdfTextureAtlas, Aabb) -> Int
 
 pub(all) struct GpuVertex {
@@ -335,7 +339,7 @@ pub(all) struct Hybrid6DynamicLowerBound {
 }
 pub fn Hybrid6DynamicLowerBound::new() -> Self
 pub fn Hybrid6DynamicLowerBound::should_prune(Self, Double) -> Bool
-pub fn Hybrid6DynamicLowerBound::update_and_fuse(Self, Array[TruthVal], Array[Double], Array[Double], Array[Double], Array[Double], Bool, Double, Array[(Int, Int)], OmtGnn, SvmKernelMapper) -> Double
+pub fn Hybrid6DynamicLowerBound::update_and_fuse(Self, Array[TruthVal], Array[Double], Array[Double], Array[Double], Array[Double], Array[Bool], Double, Array[(Int, Int)], OmtGnn, SvmKernelMapper) -> Double
 
 pub(all) struct IncrementalRenderEngine {
   width : Int
@@ -346,7 +350,7 @@ pub(all) struct IncrementalRenderEngine {
   sparse_grid : SparseSpatialGrid
   stroke_clusterer : StrokeClusterEngine
   dirty_tracker : DirtyRectTracker
-  vbo_arena : ZeroCopyVertexArena
+  vbo_arena : FlatVertexArena
   sdf_atlas : SdfTextureAtlas
   framebuffer : Framebuffer
   primitives : Array[RenderPrimitive]
@@ -501,6 +505,8 @@ pub(all) struct OmtSolveResult {
   cac_ideal_reductions : Int
   conservation_ideal_verified : Bool
   surjective_axiom_certified_clauses : Int
+  axiom_certification_failures : Int
+  axiom_schema_coverage : Array[Int]
 }
 
 pub(all) struct OuterMonoidElem {
@@ -571,12 +577,11 @@ pub(all) enum ReactiveNodeKind {
   SourceSignal
   ComputedSum
   ComputedScale(Double)
-  ComputedAabbOffset
 }
 
 pub(all) struct RenderPrimitive {
   id : Int
-  mut slice : ZeroCopyBufferSlice
+  mut slice : ArenaBufferSlice
   mut aabb : Aabb
   shader : FragmentShaderProgram
   mut transform : Affine2D
@@ -607,6 +612,7 @@ pub(all) struct SparseSpatialGrid {
   num_buckets : Int
   buckets : Array[Array[SparseTileCell]]
   mut active_tile_count : Int
+  mut total_cells_allocated : Int
 }
 pub fn SparseSpatialGrid::insert_primitive(Self, Int, Aabb) -> Unit
 pub fn SparseSpatialGrid::new(Double, Int) -> Self
@@ -648,8 +654,10 @@ pub(all) struct SurjectiveAxiomProjector {
   mut upper_bound_projections : Int
   schema_coverage : Array[Int]
 }
+pub fn SurjectiveAxiomProjector::certified_clause_count(Self) -> Int
 pub fn SurjectiveAxiomProjector::certify_clause_origin(Self, Clause) -> Bool
 pub fn SurjectiveAxiomProjector::new() -> Self
+pub fn SurjectiveAxiomProjector::schema_coverage_report(Self) -> Array[Int]
 pub fn SurjectiveAxiomProjector::project_upper_bound_clauses(Self, Array[Double], Double, Int) -> Array[Clause]
 
 pub(all) enum SvmKernelKind {
@@ -746,7 +754,7 @@ pub fn VectorTopologyGraph::register_closed_face(Self, Array[Int], Int) -> Int
 pub fn VectorTopologyGraph::split_edge_incremental(Self, Int, Int) -> (Int, Int)
 pub fn VectorTopologyGraph::upsert_vertex(Self, Vec2) -> Int
 
-pub(all) struct ZeroCopyBufferSlice {
+pub(all) struct ArenaBufferSlice {
   vbo_float_offset : Int
   vertex_count : Int
   ibo_index_offset : Int
@@ -755,17 +763,17 @@ pub(all) struct ZeroCopyBufferSlice {
   mut generation : Int
 }
 
-pub(all) struct ZeroCopyVertexArena {
+pub(all) struct FlatVertexArena {
   raw_vbo_floats : Array[Double]
   raw_ibo_indices : Array[Int]
-  mut zero_copy_views_issued : Int
+  mut arena_views_issued : Int
   mut in_place_mutations : Int
 }
-pub fn ZeroCopyVertexArena::allocate_mesh_zero_copy(Self, Array[GpuVertex], Array[Int]) -> ZeroCopyBufferSlice
-pub fn ZeroCopyVertexArena::compute_slice_aabb(Self, ZeroCopyBufferSlice) -> Aabb
-pub fn ZeroCopyVertexArena::new() -> Self
-pub fn ZeroCopyVertexArena::read_global_vertex(Self, Int) -> GpuVertex
-pub fn ZeroCopyVertexArena::translate_slice_in_place(Self, ZeroCopyBufferSlice, Double, Double) -> ZeroCopyBufferSlice
+pub fn FlatVertexArena::allocate_mesh(Self, Array[GpuVertex], Array[Int]) -> ArenaBufferSlice
+pub fn FlatVertexArena::compute_slice_aabb(Self, ArenaBufferSlice) -> Aabb
+pub fn FlatVertexArena::new() -> Self
+pub fn FlatVertexArena::read_global_vertex(Self, Int) -> GpuVertex
+pub fn FlatVertexArena::translate_slice_in_place(Self, ArenaBufferSlice, Double, Double) -> ArenaBufferSlice
 
 // Type aliases
 

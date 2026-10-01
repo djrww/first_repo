@@ -70,7 +70,7 @@ test "scenario_5_incremental_rendering_system_end_to_end" {
   assert_eq(f2.frame_index, 2)
   assert_eq(f2.dirty_primitives_count, 1)
   assert_eq(f2.coalesced_dirty_rects_count, 1)
-  assert_eq(f2.zero_copy_in_place_updates, 1)
+  assert_eq(f2.in_place_buffer_updates, 1)
   assert_true(f2.dirty_area_ratio < 0.10)
   assert_true(f2.primitives_locally_culled >= 5)
   assert_true(f2.pixels_shaded_in_frame < f1.pixels_shaded_in_frame / 2)

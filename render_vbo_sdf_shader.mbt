@@ -1,5 +1,5 @@
 ///|
-/// Zero-Copy Vertex Buffer Arena (零拷貝 & 頂點緩衝區 VBO/IBO),
+/// Flat Vertex Buffer Arena (連續平面頂點緩衝區 VBO/IBO),
 /// Signed Distance Field Texture Atlas (SDF紋理), and
 /// Programmable Vertex & Fragment Shader Pipeline (著色器).
 
@@ -15,6 +15,7 @@ pub(all) struct ColorRgba {
 ///|
 pub extend ColorRgba with Eq::{equal, not_equal}
 
+///|
 ///|
 #deprecated("Use `Debug::to_repr` instead", skip_current_package=true)
 #doc(hidden)
@@ -53,7 +54,7 @@ pub fn ColorRgba::lerp(c0 : ColorRgba, c1 : ColorRgba, t : Double) -> ColorRgba 
 pub fn blend_src_over(src : ColorRgba, dst : ColorRgba) -> ColorRgba {
   let inv_sa = 1.0 - src.a
   let out_a = src.a + dst.a * inv_sa
-  if out_a < 1.0e-9 {
+  if out_a < tol_eps {
     return { r: 0.0, g: 0.0, b: 0.0, a: 0.0, }
   }
   {
@@ -76,10 +77,11 @@ pub(all) struct GpuVertex {
 }
 
 ///|
-/// Zero-Copy Buffer Slice Descriptor (零拷貝緩衝區視圖):
-/// References a contiguous sub-range of the shared VBO/IBO Arena by offset & length
-/// without copying vertex or index arrays across pipeline stages.
-pub(all) struct ZeroCopyBufferSlice {
+/// Arena Buffer Slice Descriptor (緩衝區視圖):
+/// A view into a contiguous sub-range of the shared VBO/IBO arena, addressed by offset and
+/// length. Vertices are converted into the arena's flat float buffer once at upload time;
+/// afterwards the slice is read in place and never re-copied per frame.
+pub(all) struct ArenaBufferSlice {
   vbo_float_offset : Int // start index in raw_vbo_floats (stride = 8)
   vertex_count : Int
   ibo_index_offset : Int // start index in raw_ibo_indices
@@ -89,33 +91,36 @@ pub(all) struct ZeroCopyBufferSlice {
 }
 
 ///|
-/// Contiguous Zero-Copy Vertex & Index Buffer Arena (頂點緩衝區 VBO + IBO).
-pub(all) struct ZeroCopyVertexArena {
+/// Contiguous Vertex & Index Buffer Arena (頂點緩衝區 VBO + IBO).
+/// Owns one flat interleaved float array plus one flat index array; slices are views into
+/// them, and in-place updates rewrite the floats belonging to a slice.
+pub(all) struct FlatVertexArena {
   raw_vbo_floats : Array[Double] // flat interleaved [x, y, u, v, r, g, b, a, ...]
   raw_ibo_indices : Array[Int] // flat triangle indices [i0, i1, i2, ...]
-  mut zero_copy_views_issued : Int
+  mut arena_views_issued : Int
   mut in_place_mutations : Int
 }
 
 ///|
-/// Create a new Zero-Copy Vertex & Index Buffer Arena.
-pub fn ZeroCopyVertexArena::new() -> ZeroCopyVertexArena {
+/// Create a new Vertex & Index Buffer Arena.
+pub fn FlatVertexArena::new() -> FlatVertexArena {
   {
     raw_vbo_floats: [],
     raw_ibo_indices: [],
-    zero_copy_views_issued: 0,
+    arena_views_issued: 0,
     in_place_mutations: 0,
   }
 }
 
 ///|
-/// Append a mesh into the contiguous VBO/IBO arena and return a `ZeroCopyBufferSlice`
-/// view directly into the arena memory.
-pub fn ZeroCopyVertexArena::allocate_mesh_zero_copy(
-  self : ZeroCopyVertexArena,
+/// Append a mesh into the contiguous VBO/IBO arena and return an `ArenaBufferSlice` view
+/// into the arena memory. The vertices are unpacked into the flat buffer here (one
+/// conversion at upload); the returned slice itself is a plain offset/length view.
+pub fn FlatVertexArena::allocate_mesh(
+  self : FlatVertexArena,
   vertices : Array[GpuVertex],
   local_indices : Array[Int],
-) -> ZeroCopyBufferSlice {
+) -> ArenaBufferSlice {
   let stride = 8
   let vbo_offset = self.raw_vbo_floats.length()
   let base_vertex_idx = vbo_offset / stride
@@ -133,7 +138,7 @@ pub fn ZeroCopyVertexArena::allocate_mesh_zero_copy(
   for idx in local_indices {
     self.raw_ibo_indices.push(base_vertex_idx + idx)
   }
-  self.zero_copy_views_issued = self.zero_copy_views_issued + 1
+  self.arena_views_issued = self.arena_views_issued + 1
   {
     vbo_float_offset: vbo_offset,
     vertex_count: vertices.length(),
@@ -147,12 +152,12 @@ pub fn ZeroCopyVertexArena::allocate_mesh_zero_copy(
 ///|
 /// Zero-copy in-place translation of all vertices inside `slice` directly inside
 /// `raw_vbo_floats` without allocating or copying any vertex array.
-pub fn ZeroCopyVertexArena::translate_slice_in_place(
-  self : ZeroCopyVertexArena,
-  slice : ZeroCopyBufferSlice,
+pub fn FlatVertexArena::translate_slice_in_place(
+  self : FlatVertexArena,
+  slice : ArenaBufferSlice,
   dx : Double,
   dy : Double,
-) -> ZeroCopyBufferSlice {
+) -> ArenaBufferSlice {
   let mut offset = slice.vbo_float_offset
   for _i = 0; _i < slice.vertex_count; _i = _i + 1 {
     if offset + 1 < self.raw_vbo_floats.length() {
@@ -166,9 +171,9 @@ pub fn ZeroCopyVertexArena::translate_slice_in_place(
 }
 
 ///|
-/// Read a vertex by global index directly from the flat VBO arena (O(1) zero-copy read).
-pub fn ZeroCopyVertexArena::read_global_vertex(
-  self : ZeroCopyVertexArena,
+/// Read a vertex by global index directly from the flat float buffer (O(1), no allocation).
+pub fn FlatVertexArena::read_global_vertex(
+  self : FlatVertexArena,
   global_vertex_idx : Int,
 ) -> GpuVertex {
   let base = global_vertex_idx * 8
@@ -187,18 +192,18 @@ pub fn ZeroCopyVertexArena::read_global_vertex(
 }
 
 ///|
-/// Compute the tight AABB of a `ZeroCopyBufferSlice` directly from the VBO arena without copying.
-pub fn ZeroCopyVertexArena::compute_slice_aabb(
-  self : ZeroCopyVertexArena,
-  slice : ZeroCopyBufferSlice,
+/// Compute the tight AABB of a `ArenaBufferSlice` directly from the VBO arena without copying.
+pub fn FlatVertexArena::compute_slice_aabb(
+  self : FlatVertexArena,
+  slice : ArenaBufferSlice,
 ) -> Aabb {
   if slice.vertex_count == 0 {
     return Aabb::new(0.0, 0.0, 0.0, 0.0)
   }
-  let mut min_x = 1.0e18
-  let mut min_y = 1.0e18
-  let mut max_x = -1.0e18
-  let mut max_y = -1.0e18
+  let mut min_x = scan_infinity
+  let mut min_y = scan_infinity
+  let mut max_x = -scan_infinity
+  let mut max_y = -scan_infinity
   let mut offset = slice.vbo_float_offset
   for _i = 0; _i < slice.vertex_count; _i = _i + 1 {
     let vx = self.raw_vbo_floats[offset]
@@ -232,7 +237,7 @@ pub fn eval_analytical_sdf(shape : SdfShapeKind, p : Vec2) -> Double {
       let ba_x = b.x - a.x
       let ba_y = b.y - a.y
       let ba_dot = ba_x * ba_x + ba_y * ba_y
-      let h = if ba_dot > 1.0e-12 {
+      let h = if ba_dot > tol_eps_tight {
         ((pa_x * ba_x + pa_y * ba_y) / ba_dot).clamp(min=0.0, max=1.0)
       } else {
         0.0
@@ -257,7 +262,7 @@ pub fn eval_analytical_sdf(shape : SdfShapeKind, p : Vec2) -> Double {
 /// Hermite smoothstep interpolation in [0.0, 1.0] for SDF anti-aliasing.
 pub fn sdf_smoothstep(edge0 : Double, edge1 : Double, x : Double) -> Double {
   let denom = edge1 - edge0
-  if denom.abs() < 1.0e-12 {
+  if denom.abs() < tol_eps_tight {
     return if x < edge0 { 0.0 } else { 1.0 }
   }
   let t = ((x - edge0) / denom).clamp(min=0.0, max=1.0)
@@ -291,7 +296,7 @@ pub fn SdfTextureAtlas::bake_from_shapes(
     for x = 0; x < w; x = x + 1 {
       let u = (x.to_double() + 0.5) / w.to_double()
       let pt : Vec2 = { x: u, y: v, }
-      let mut min_d = 1.0e9
+      let mut min_d = ray_max_distance
       for s in shapes {
         let d = eval_analytical_sdf(s, pt)
         if d < min_d {
@@ -390,7 +395,7 @@ pub fn execute_fragment_shader(
       let dx = p1.x - p0.x
       let dy = p1.y - p0.y
       let len_sq = dx * dx + dy * dy
-      let t = if len_sq > 1.0e-9 {
+      let t = if len_sq > tol_eps {
         ((frag_pos.x - p0.x) * dx + (frag_pos.y - p0.y) * dy) / len_sq
       } else {
         0.0

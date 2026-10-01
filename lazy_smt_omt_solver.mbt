@@ -37,6 +37,11 @@ pub(all) struct LraLiaTheorySolver {
   ub_reason : Array[Int] // guard_lit that established cur_ub[i]
   is_integer : Array[Bool]
   witness : Array[Double]
+  /// Set only when `witness` has been certified to satisfy every active guarded constraint.
+  mut witness_certified : Bool
+  mut propagation_rounds : Int
+  mut witness_repair_rounds : Int
+  mut witness_improvement_rounds : Int
   constraints : Array[GuardedArithConstraint]
   mut farkas_conflicts : Int
   mut lia_cuts : Int
@@ -65,6 +70,10 @@ pub fn LraLiaTheorySolver::new(
     ub_reason,
     is_integer: is_integer.copy(),
     witness,
+    witness_certified: false,
+    propagation_rounds: 0,
+    witness_repair_rounds: 0,
+    witness_improvement_rounds: 0,
     constraints: [],
     farkas_conflicts: 0,
     lia_cuts: 0,
@@ -150,8 +159,327 @@ fn push_conflict_reason(conflict_lits : Array[Int], r : Int) -> Unit {
 }
 
 ///|
-/// Execute LRA + LIA bound propagation, Farkas infeasibility check, and LIA integrality tightening.
-/// Returns `Some(conflict_clause)` if LRA or LIA detects theory inconsistency, or `None` if feasible.
+/// Numeric tolerance used by every arithmetic bound comparison.
+// tol_eps now lives in solver_tunables.mbt as `tol_eps`
+
+
+
+///|
+/// Round a `Double` to the nearest integer value, with halves going away from zero.
+fn round_half_away(x : Double) -> Double {
+  if x >= 0.0 {
+    (x + 0.5).floor()
+  } else {
+    -((-x + 0.5).floor())
+  }
+}
+
+///|
+/// Check whether the linear constraint `term op rhs` holds exactly (up to `tol_eps`).
+fn arith_constraint_satisfied(
+  term : LinearTerm,
+  op : ArithOp,
+  rhs : Double,
+  point : Array[Double],
+) -> Bool {
+  let v = term.eval(point)
+  match op {
+    Le => v <= rhs + tol_eps
+    Ge => v >= rhs - tol_eps
+    Lt => v <= rhs - tol_eps
+    Gt => v >= rhs + tol_eps
+    Eq => (v - rhs).abs() <= tol_eps
+  }
+}
+
+///|
+/// Violation magnitude of `term op rhs` at `point`; 0.0 when the constraint holds.
+fn arith_constraint_violation(
+  term : LinearTerm,
+  op : ArithOp,
+  rhs : Double,
+  point : Array[Double],
+) -> Double {
+  let v = term.eval(point)
+  match op {
+    Le => (v - rhs).max(0.0)
+    Ge => (rhs - v).max(0.0)
+    Lt => (v - rhs + tol_eps).max(0.0)
+    Gt => (rhs - v + tol_eps).max(0.0)
+    Eq => (v - rhs).abs()
+  }
+}
+
+///|
+/// Try to tighten `cur_lb[v]` up to `bound`.
+/// Returns 1 when tightened, 2 when the tightened bounds are contradictory, 0 otherwise.
+fn LraLiaTheorySolver::tighten_lower(
+  self : LraLiaTheorySolver,
+  v : Int,
+  bound : Double,
+  reason : Int,
+) -> Int {
+  if bound <= self.cur_lb[v] + tol_eps {
+    return 0
+  }
+  self.cur_lb[v] = bound
+  self.lb_reason[v] = reason
+  if self.cur_lb[v] > self.cur_ub[v] + tol_eps {
+    return 2
+  }
+  1
+}
+
+///|
+/// Try to tighten `cur_ub[v]` down to `bound`.
+/// Returns 1 when tightened, 2 when the tightened bounds are contradictory, 0 otherwise.
+fn LraLiaTheorySolver::tighten_upper(
+  self : LraLiaTheorySolver,
+  v : Int,
+  bound : Double,
+  reason : Int,
+) -> Int {
+  if bound >= self.cur_ub[v] - tol_eps {
+    return 0
+  }
+  self.cur_ub[v] = bound
+  self.ub_reason[v] = reason
+  if self.cur_lb[v] > self.cur_ub[v] + tol_eps {
+    return 2
+  }
+  1
+}
+
+///|
+/// Apply integer integrality tightening (ceil of the lower bound, floor of the upper bound)
+/// to variable `v`. Returns 1 when tightened, 2 on an integrality contradiction, 0 otherwise.
+fn LraLiaTheorySolver::apply_integrality(
+  self : LraLiaTheorySolver,
+  v : Int,
+) -> Int {
+  if !self.is_integer[v] {
+    return 0
+  }
+  let int_lb = self.cur_lb[v].ceil()
+  let int_ub = self.cur_ub[v].floor()
+  if int_lb > int_ub + tol_eps {
+    return 2
+  }
+  let mut changed = 0
+  if int_lb > self.cur_lb[v] + tol_eps {
+    self.cur_lb[v] = int_lb
+    changed = 1
+  }
+  if int_ub < self.cur_ub[v] - tol_eps {
+    self.cur_ub[v] = int_ub
+    changed = 1
+  }
+  changed
+}
+
+///|
+/// Build a theory conflict clause from the reasons recorded for variable `v`.
+/// `integrality` selects the LIA integrality-cut axiom over the LRA Farkas axiom, so the
+/// clause origin always reflects the actual cause of the conflict.
+fn LraLiaTheorySolver::build_arith_conflict(
+  self : LraLiaTheorySolver,
+  guard_lit : Int,
+  v : Int,
+  integrality : Bool,
+  next_clause_id : Int,
+) -> Clause {
+  let lits : Array[Int] = []
+  push_conflict_reason(lits, guard_lit)
+  push_conflict_reason(lits, self.lb_reason[v])
+  push_conflict_reason(lits, self.ub_reason[v])
+  let origin = if integrality {
+    self.lia_cuts = self.lia_cuts + 1
+    LiaIntegralityCut(v)
+  } else {
+    self.farkas_conflicts = self.farkas_conflicts + 1
+    LraFarkasAxiom(self.farkas_conflicts)
+  }
+  Clause::new(next_clause_id, lits, true, lits.length().max(1), origin)
+}
+
+///|
+/// Certify the current witness: inside the propagated bounds, integral for integer
+/// variables, and satisfying every active guarded constraint exactly.
+pub fn LraLiaTheorySolver::is_witness_certified(
+  self : LraLiaTheorySolver,
+  values : Array[TruthVal],
+) -> Bool {
+  for v = 0; v < self.num_arith_vars; v = v + 1 {
+    if self.witness[v] < self.cur_lb[v] - tol_eps ||
+      self.witness[v] > self.cur_ub[v] + tol_eps {
+      return false
+    }
+    if self.is_integer[v] &&
+      (self.witness[v] - round_half_away(self.witness[v])).abs() > tol_eps {
+      return false
+    }
+  }
+  for c in self.constraints {
+    if is_lit_true(c.guard_lit, values) &&
+      !arith_constraint_satisfied(c.term, c.op, c.rhs, self.witness) {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// Tentatively move `witness[v]` to `x`; the move is kept only when the whole witness stays
+/// certified against every active guarded constraint.
+fn LraLiaTheorySolver::try_witness_value(
+  self : LraLiaTheorySolver,
+  values : Array[TruthVal],
+  v : Int,
+  x : Double,
+) -> Bool {
+  let saved = self.witness[v]
+  self.witness[v] = x
+  if self.is_witness_certified(values) {
+    true
+  } else {
+    self.witness[v] = saved
+    false
+  }
+}
+
+///|
+/// Compute an objective-directed arithmetic witness, repair it against violated active
+/// constraints, then improve it coordinate-wise while preserving exact feasibility.
+/// `witness_certified` is set only when the final point satisfies every active constraint,
+/// so an unverifiable point is never reported as an arithmetic solution.
+fn LraLiaTheorySolver::compute_certified_witness(
+  self : LraLiaTheorySolver,
+  values : Array[TruthVal],
+  arith_obj_weights : Array[Double],
+) -> Unit {
+  // 1. Objective-preferred starting point inside the propagated bounds
+  for v = 0; v < self.num_arith_vars; v = v + 1 {
+    let w = if v < arith_obj_weights.length() {
+      arith_obj_weights[v]
+    } else {
+      0.0
+    }
+    self.witness[v] = if w >= 0.0 { self.cur_lb[v] } else { self.cur_ub[v] }
+  }
+  // 2. Projection repair: repeatedly correct the most violated active constraint
+  let mut round = 0
+  while round < arith_witness_round_limit {
+    round = round + 1
+    let mut worst_violation = tol_eps
+    let mut worst_idx = -1
+    let mut idx = 0
+    for c in self.constraints {
+      if is_lit_true(c.guard_lit, values) {
+        let violation = arith_constraint_violation(
+          c.term, c.op, c.rhs, self.witness,
+        )
+        if violation > worst_violation {
+          worst_violation = violation
+          worst_idx = idx
+        }
+      }
+      idx = idx + 1
+    }
+    if worst_idx < 0 {
+      break
+    }
+    let c = self.constraints[worst_idx]
+    let activity = c.term.eval(self.witness)
+    let needed = match c.op {
+      Le | Lt => -(activity - c.rhs)
+      Ge | Gt => c.rhs - activity
+      Eq =>
+        if activity > c.rhs {
+          -(activity - c.rhs)
+        } else {
+          c.rhs - activity
+        }
+    }
+    let mut best_j = -1
+    let mut best_abs_coeff = 0.0
+    let mut best_target = 0.0
+    for pair in c.term.coeffs {
+      let (j, a) = pair
+      if j < 0 || j >= self.num_arith_vars || a.abs() <= tol_eps {
+        continue
+      }
+      let target = (self.witness[j] + needed / a).clamp(
+        min=self.cur_lb[j],
+        max=self.cur_ub[j],
+      )
+      let snapped = if self.is_integer[j] {
+        round_half_away(target)
+      } else {
+        target
+      }
+      let clamped = snapped.clamp(min=self.cur_lb[j], max=self.cur_ub[j])
+      if (clamped - self.witness[j]).abs() > tol_eps &&
+        a.abs() > best_abs_coeff {
+        best_abs_coeff = a.abs()
+        best_j = j
+        best_target = clamped
+      }
+    }
+    if best_j < 0 {
+      break
+    }
+    self.witness[best_j] = best_target
+    self.witness_repair_rounds = round
+  }
+  // 3. Coordinate-wise objective improvement, keeping the witness exactly feasible
+  let mut pass = 0
+  let mut improved = true
+  while improved && pass < arith_witness_round_limit {
+    improved = false
+    pass = pass + 1
+    for v = 0; v < self.num_arith_vars; v = v + 1 {
+      let w = if v < arith_obj_weights.length() {
+        arith_obj_weights[v]
+      } else {
+        0.0
+      }
+      let target = if w >= 0.0 { self.cur_lb[v] } else { self.cur_ub[v] }
+      let start = self.witness[v]
+      if (target - start).abs() <= tol_eps {
+        continue
+      }
+      if self.try_witness_value(values, v, target) {
+        improved = true
+        continue
+      }
+      // Binary search the furthest feasible step towards the objective-preferred bound
+      let mut lo = start
+      let mut hi = target
+      for _i = 0; _i < 48; _i = _i + 1 {
+        let mid = 0.5 * (lo + hi)
+        let snapped = if self.is_integer[v] { round_half_away(mid) } else { mid }
+        let clamped = snapped.clamp(min=self.cur_lb[v], max=self.cur_ub[v])
+        if (clamped - start).abs() <= tol_eps {
+          break
+        } else if self.try_witness_value(values, v, clamped) {
+          lo = clamped
+          improved = true
+        } else {
+          hi = clamped
+        }
+      }
+    }
+  }
+  self.witness_improvement_rounds = pass
+  self.witness_certified = self.is_witness_certified(values)
+}
+
+///|
+/// Execute LRA + LIA bound propagation to a fixpoint, integer integrality tightening, and
+/// sound interval-based infeasibility detection.
+/// Returns `Some(conflict_clause)` only when the active guarded constraints are provably
+/// inconsistent, or `None` otherwise. The candidate arithmetic witness is always certified
+/// against every active constraint before `witness_certified` is set.
 pub fn LraLiaTheorySolver::propagate_and_check(
   self : LraLiaTheorySolver,
   values : Array[TruthVal],
@@ -165,183 +493,112 @@ pub fn LraLiaTheorySolver::propagate_and_check(
     self.lb_reason[i] = 0
     self.ub_reason[i] = 0
   }
+  self.witness_certified = false
+  self.propagation_rounds = 0
+  self.witness_repair_rounds = 0
+  self.witness_improvement_rounds = 0
 
-  // Pass 1: Apply single-variable bounds from active guarded constraints
-  for c in self.constraints {
-    if is_lit_true(c.guard_lit, values) && c.term.coeffs.length() == 1 {
-      let (v, coeff) = c.term.coeffs[0]
-      if v >= 0 && v < self.num_arith_vars && coeff.abs() > 1.0e-12 {
-        let adj_rhs = (c.rhs - c.term.constant) / coeff
-        let eff_op = if coeff > 0.0 {
-          c.op
-        } else {
-          match c.op {
-            Le => Ge
-            Ge => Le
-            Lt => Gt
-            Gt => Lt
-            Eq => Eq
-          }
-        }
-        match eff_op {
-          Le | Lt => {
-            let bound = if c.is_lia && eff_op == Lt {
-              adj_rhs.floor() - 1.0
-            } else if eff_op == Lt {
-              adj_rhs - 1.0e-5
-            } else {
-              adj_rhs
-            }
-            if bound < self.cur_ub[v] {
-              self.cur_ub[v] = bound
-              self.ub_reason[v] = c.guard_lit
-            }
-          }
-          Ge | Gt => {
-            let bound = if c.is_lia && eff_op == Gt {
-              adj_rhs.ceil() + 1.0
-            } else if eff_op == Gt {
-              adj_rhs + 1.0e-5
-            } else {
-              adj_rhs
-            }
-            if bound > self.cur_lb[v] {
-              self.cur_lb[v] = bound
-              self.lb_reason[v] = c.guard_lit
-            }
-          }
-          Eq => {
-            if adj_rhs > self.cur_lb[v] {
-              self.cur_lb[v] = adj_rhs
-              self.lb_reason[v] = c.guard_lit
-            }
-            if adj_rhs < self.cur_ub[v] {
-              self.cur_ub[v] = adj_rhs
-              self.ub_reason[v] = c.guard_lit
-            }
-          }
-        }
+  // Iterative bound propagation over every active guarded constraint until fixpoint.
+  // Every derived bound is a necessary condition of the active constraints and of the
+  // current variable domains, so each contradiction detected here is a sound theory lemma.
+  let mut round = 0
+  let mut changed = true
+  while changed && round < arith_propagation_round_limit {
+    changed = false
+    round = round + 1
+    for c in self.constraints {
+      if !is_lit_true(c.guard_lit, values) {
+        continue
       }
-    }
-  }
-
-  // Pass 2: LIA Integrality Tightening & LRA Interval Consistency Check
-  for v = 0; v < self.num_arith_vars; v = v + 1 {
-    if self.is_integer[v] {
-      let int_lb = self.cur_lb[v].ceil()
-      let int_ub = self.cur_ub[v].floor()
-      if int_lb > int_ub + 1.0e-9 {
-        self.lia_cuts = self.lia_cuts + 1
-        let conflict_lits : Array[Int] = []
-        push_conflict_reason(conflict_lits, self.lb_reason[v])
-        push_conflict_reason(conflict_lits, self.ub_reason[v])
-        return Some(
-          Clause::new(
-            next_clause_id,
-            conflict_lits,
-            true,
-            conflict_lits.length().max(1),
-            LiaIntegralityCut(v),
-          ),
-        )
-      }
-      self.cur_lb[v] = int_lb
-      self.cur_ub[v] = int_ub
-    } else if self.cur_lb[v] > self.cur_ub[v] + 1.0e-9 {
-      self.farkas_conflicts = self.farkas_conflicts + 1
-      let conflict_lits : Array[Int] = []
-      push_conflict_reason(conflict_lits, self.lb_reason[v])
-      push_conflict_reason(conflict_lits, self.ub_reason[v])
-      return Some(
-        Clause::new(
-          next_clause_id,
-          conflict_lits,
-          true,
-          conflict_lits.length().max(1),
-          LraFarkasAxiom(self.farkas_conflicts),
-        ),
-      )
-    }
-  }
-
-  // Pass 3: Multi-variable Fourier-Motzkin / Simplex interval propagation & Farkas check
-  for c in self.constraints {
-    if is_lit_true(c.guard_lit, values) && c.term.coeffs.length() >= 2 {
-      // Check minimum and maximum activity of sum a_i x_i + constant
-      let mut min_act = c.term.constant
-      let mut max_act = c.term.constant
+      let rhs = c.rhs - c.term.constant
       for pair in c.term.coeffs {
-        let (v, a) = pair
-        if v >= 0 && v < self.num_arith_vars {
-          if a >= 0.0 {
-            min_act = min_act + a * self.cur_lb[v]
-            max_act = max_act + a * self.cur_ub[v]
+        let (vj, aj) = pair
+        if vj < 0 || vj >= self.num_arith_vars || aj.abs() <= tol_eps {
+          continue
+        }
+        // Interval bounds of the remaining terms of this constraint
+        let mut min_rest = 0.0
+        let mut max_rest = 0.0
+        for other in c.term.coeffs {
+          let (vi, ai) = other
+          if vi == vj || vi < 0 || vi >= self.num_arith_vars {
+            continue
+          }
+          if ai >= 0.0 {
+            min_rest = min_rest + ai * self.cur_lb[vi]
+            max_rest = max_rest + ai * self.cur_ub[vi]
           } else {
-            min_act = min_act + a * self.cur_ub[v]
-            max_act = max_act + a * self.cur_lb[v]
+            min_rest = min_rest + ai * self.cur_ub[vi]
+            max_rest = max_rest + ai * self.cur_lb[vi]
           }
         }
-      }
-      let violated_le = (c.op == Le || c.op == Lt || c.op == Eq) &&
-        min_act > c.rhs + 1.0e-9
-      let violated_ge = (c.op == Ge || c.op == Gt || c.op == Eq) &&
-        max_act < c.rhs - 1.0e-9
-
-      if violated_le || violated_ge {
-        let conflict_lits : Array[Int] = []
-        push_conflict_reason(conflict_lits, c.guard_lit)
-        for pair in c.term.coeffs {
-          let (v, a) = pair
-          if v >= 0 && v < self.num_arith_vars {
-            if violated_le {
-              if a >= 0.0 {
-                push_conflict_reason(conflict_lits, self.lb_reason[v])
-              } else {
-                push_conflict_reason(conflict_lits, self.ub_reason[v])
-              }
-            } else if a >= 0.0 {
-              push_conflict_reason(conflict_lits, self.ub_reason[v])
-            } else {
-              push_conflict_reason(conflict_lits, self.lb_reason[v])
-            }
+        // `aj * x_j` is bounded above by `rhs - min_rest` and below by `rhs - max_rest`
+        if c.op == Le || c.op == Lt || c.op == Eq {
+          let mut upper = rhs - min_rest
+          if c.op == Lt {
+            upper = upper - tol_eps
+          }
+          let status = if aj > 0.0 {
+            self.tighten_upper(vj, upper / aj, c.guard_lit)
+          } else {
+            self.tighten_lower(vj, upper / aj, c.guard_lit)
+          }
+          if status == 2 {
+            // An integer variable whose bounds became contradictory is separated by the
+            // integrality cut, an integer-free variable by the real-relaxation (Farkas) axiom.
+            return Some(
+              self.build_arith_conflict(
+                c.guard_lit, vj, self.is_integer[vj], next_clause_id,
+              ),
+            )
+          } else if status == 1 {
+            changed = true
           }
         }
-        if c.is_lia {
-          self.lia_cuts = self.lia_cuts + 1
+        if c.op == Ge || c.op == Gt || c.op == Eq {
+          let mut lower = rhs - max_rest
+          if c.op == Gt {
+            lower = lower + tol_eps
+          }
+          let status = if aj > 0.0 {
+            self.tighten_lower(vj, lower / aj, c.guard_lit)
+          } else {
+            self.tighten_upper(vj, lower / aj, c.guard_lit)
+          }
+          if status == 2 {
+            return Some(
+              self.build_arith_conflict(
+                c.guard_lit, vj, self.is_integer[vj], next_clause_id,
+              ),
+            )
+          } else if status == 1 {
+            changed = true
+          }
+        }
+        let int_status = self.apply_integrality(vj)
+        if int_status == 2 {
           return Some(
-            Clause::new(
-              next_clause_id,
-              conflict_lits,
-              true,
-              conflict_lits.length().max(1),
-              LiaIntegralityCut(self.lia_cuts),
-            ),
+            self.build_arith_conflict(c.guard_lit, vj, true, next_clause_id),
           )
-        } else {
-          self.farkas_conflicts = self.farkas_conflicts + 1
-          return Some(
-            Clause::new(
-              next_clause_id,
-              conflict_lits,
-              true,
-              conflict_lits.length().max(1),
-              LraFarkasAxiom(self.farkas_conflicts),
-            ),
-          )
+        } else if int_status == 1 {
+          changed = true
         }
       }
     }
   }
 
-  // Compute optimal witness inside tightened bounds [cur_lb, cur_ub]
+  // Final integrality sweep so integer bounds are tightened even when no constraint
+  // touched the variable during the last propagation round.
   for v = 0; v < self.num_arith_vars; v = v + 1 {
-    let w = if v < arith_obj_weights.length() {
-      arith_obj_weights[v]
-    } else {
-      0.0
+    let int_status = self.apply_integrality(v)
+    if int_status == 2 {
+      return Some(self.build_arith_conflict(0, v, true, next_clause_id))
     }
-    self.witness[v] = if w >= 0.0 { self.cur_lb[v] } else { self.cur_ub[v] }
   }
+  self.propagation_rounds = round
+
+  // Certify an arithmetic witness against every active constraint
+  self.compute_certified_witness(values, arith_obj_weights)
   None
 }
 
@@ -363,6 +620,11 @@ pub(all) struct OmtSolveResult {
   cac_ideal_reductions : Int
   conservation_ideal_verified : Bool
   surjective_axiom_certified_clauses : Int
+  /// Clauses that failed origin/hash certification. Non-zero means the surjective-axiom
+  /// claim does not hold for this run.
+  axiom_certification_failures : Int
+  /// Certified-clause count per `AxiomOrigin` category (9 categories, declaration order).
+  axiom_schema_coverage : Array[Int]
 }
 
 ///|
@@ -390,6 +652,14 @@ pub(all) struct LazySmtOmtSolver {
   lrb : LrbBrancher
   hybrid6 : Hybrid6DynamicLowerBound
   mut qap : QapIncrementalPruner
+  /// Number of times the 1-UIP learnt-clause invariant check failed (must stay 0).
+  mut learnt_invariant_failures : Int
+  /// Number of complete Boolean models rejected because the arithmetic witness could not
+  /// be certified against the guarded arithmetic constraints.
+  mut uncertified_witness_rejections : Int
+  /// Number of clauses whose origin/hash certification failed (must stay 0 for the
+  /// surjective-axiom claim to hold).
+  mut axiom_certification_failures : Int
   opt_lemma_engine : AdaptiveOptimalLemmaEngine
   cac : CylindricalAlgebraicCovering
   conservation_ideal : HomomorphicConservationIdeal
@@ -435,6 +705,9 @@ pub fn LazySmtOmtSolver::new(
     lrb: LrbBrancher::new(num_vars),
     hybrid6: Hybrid6DynamicLowerBound::new(),
     qap,
+    learnt_invariant_failures: 0,
+    uncertified_witness_rejections: 0,
+      axiom_certification_failures: 0,
     opt_lemma_engine: AdaptiveOptimalLemmaEngine::new(num_vars),
     cac: CylindricalAlgebraicCovering::new(num_arith_vars),
     conservation_ideal: HomomorphicConservationIdeal::new(num_vars),
@@ -459,9 +732,27 @@ pub fn LazySmtOmtSolver::add_clause(
   learnt : Bool,
   origin : AxiomOrigin,
 ) -> Int {
+  self.add_clause_with_lbd(lits, learnt, lits.length().max(1), origin)
+}
+
+///|
+/// Add a CNF clause with an explicit LBD (Literal Block Distance).
+/// Conflict analysis computes the exact LBD, which must not be overwritten by the clause
+/// length: LBD drives both clause activity bookkeeping and the GNN clause embeddings.
+pub fn LazySmtOmtSolver::add_clause_with_lbd(
+  self : LazySmtOmtSolver,
+  lits : Array[Int],
+  learnt : Bool,
+  lbd : Int,
+  origin : AxiomOrigin,
+) -> Int {
   let id = self.clauses.length()
-  let c = Clause::new(id, lits, learnt, lits.length().max(1), origin)
-  let _ = self.axiom_projector.certify_clause_origin(c)
+  let c = Clause::new(id, lits, learnt, lbd.max(1), origin)
+  // Hash/origin certification is a real check: a clause that fails it is still added (it is
+  // soundly derivable), but the failure is counted so the surjectivity claim stays honest.
+  if !self.axiom_projector.certify_clause_origin(c) {
+    self.axiom_certification_failures = self.axiom_certification_failures + 1
+  }
   self.clauses.push(c)
   id
 }
@@ -823,7 +1114,7 @@ pub fn LazySmtOmtSolver::check_lazy_theories(
     self.lra_lia.cur_lb,
     self.lra_lia.cur_ub,
     self.arith_obj_weights,
-    true,
+    self.lra_lia.is_integer,
     qap_lb,
     self.euf_var_pairs,
     self.gnn,
@@ -897,8 +1188,10 @@ fn LazySmtOmtSolver::handle_conflict(
   self : LazySmtOmtSolver,
   conflict_clause : Clause,
 ) -> Bool {
-  // Certify conflict clause origin if not yet certified
-  let _ = self.axiom_projector.certify_clause_origin(conflict_clause)
+  // Certify the conflict clause origin; count failures instead of discarding the result.
+  if !self.axiom_projector.certify_clause_origin(conflict_clause) {
+    self.axiom_certification_failures = self.axiom_certification_failures + 1
+  }
   if self.decision_level() == 0 {
     return false
   }
@@ -925,14 +1218,29 @@ fn LazySmtOmtSolver::handle_conflict(
     lbd,
     UipResolution(part_vars.length(), self.decision_level()),
   )
-  // Verify Homomorphic Conservation Ideal invariant on conflict resolution
-  if conflict_clause.lits.length() <= 5 && learnt_clause.lits.length() <= 5 {
-    let _ = self.conservation_ideal.verify_resolution_conservation(
-      conflict_clause, conflict_clause, learnt_clause,
-    )
+  // Verify the 1-UIP learnt-clause invariant under the pre-backjump assignment: every
+  // literal of a sound 1-UIP clause is falsified before backjumping. When the check fails
+  // the clause is not trusted, so the solver falls back to chronological backtracking
+  // rather than learning a clause whose entailment cannot be justified.
+  if !self.conservation_ideal.verify_learnt_clause_blocks(
+    learnt_clause,
+    self.values,
+  ) {
+    self.learnt_invariant_failures = self.learnt_invariant_failures + 1
+    let parent_level = (self.decision_level() - 1).max(0)
+    self.backjump(parent_level)
+    if parent_level == 0 {
+      return false
+    }
+    return true
   }
   self.backjump(bt_level)
-  let new_cid = self.add_clause(learnt_clause.lits, true, learnt_clause.origin)
+  let new_cid = self.add_clause_with_lbd(
+    learnt_clause.lits,
+    true,
+    learnt_clause.lbd,
+    learnt_clause.origin,
+  )
   if learnt_clause.lits.length() == 1 {
     if !self.enqueue_lit(learnt_clause.lits[0], new_cid) {
       return false
@@ -962,7 +1270,8 @@ pub fn LazySmtOmtSolver::solve_omt(
 
   let mut search_active = true
   let mut steps = 0
-  let max_steps = max_conflicts * 10 + 500
+  let max_steps = max_conflicts * arith_step_budget_per_conflict +
+    arith_step_budget_base
   while search_active &&
         self.lrb.total_conflicts < max_conflicts &&
         steps < max_steps {
@@ -1013,7 +1322,27 @@ pub fn LazySmtOmtSolver::solve_omt(
         )
       }
       None => {
-        // Complete Boolean & Theory-consistent model found!
+        // Complete Boolean model found. Before recording it as a solution, require that the
+        // arithmetic witness has been certified against every active guarded constraint;
+        // an unverifiable witness is never reported as an optimal solution.
+        if !self.lra_lia.witness_certified {
+          self.uncertified_witness_rejections = self.uncertified_witness_rejections + 1
+          if self.decision_level() == 0 {
+            search_active = false
+            break
+          }
+          let block_lits : Array[Int] = []
+          for lit in self.trail {
+            block_lits.push(lit_neg(lit))
+          }
+          self.backjump(0)
+          let _ = self.add_clause(
+            block_lits,
+            true,
+            LraFarkasAxiom(self.lra_lia.farkas_conflicts),
+          )
+          continue
+        }
         let obj = self.evaluate_total_objective()
         // Feed positive sample (y = +1.0) to OMT-SVM Kernel Mapper
         if self.num_vars >= 1 {
@@ -1102,7 +1431,7 @@ pub fn LazySmtOmtSolver::solve_omt(
     optimal_objective: if sat {
       self.opt_lemma_engine.best_objective
     } else {
-      1.0e15
+      arith_infinity
     },
     best_bool_model: self.opt_lemma_engine.best_assignment.copy(),
     best_arith_model: self.opt_lemma_engine.best_arith_assignment.copy(),
@@ -1116,6 +1445,8 @@ pub fn LazySmtOmtSolver::solve_omt(
     bbf_restorations: self.bbf.total_restorations,
     cac_ideal_reductions: self.cac.ideal_reductions_count,
     conservation_ideal_verified: conserved,
-    surjective_axiom_certified_clauses: self.axiom_projector.total_certified_clauses,
+    surjective_axiom_certified_clauses: self.axiom_projector.certified_clause_count(),
+    axiom_certification_failures: self.axiom_certification_failures,
+    axiom_schema_coverage: self.axiom_projector.schema_coverage_report(),
   }
 }

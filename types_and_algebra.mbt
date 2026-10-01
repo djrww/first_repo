@@ -14,6 +14,7 @@ pub(all) enum TruthVal {
 pub extend TruthVal with Eq::{equal, not_equal}
 
 ///|
+///|
 #deprecated("Use `Debug::to_repr` instead", skip_current_package=true)
 #doc(hidden)
 pub extend TruthVal with @debug.Debug::{to_repr}
@@ -29,8 +30,15 @@ pub(all) enum ArithOp {
 } derive(Eq)
 
 ///|
+pub extend Term with Eq::{equal, not_equal}
+
+///|
+pub extend AxiomOrigin with Eq::{equal, not_equal}
+
+///|
 pub extend ArithOp with Eq::{equal, not_equal}
 
+///|
 ///|
 /// Axiom origin tag certifying the CDCL(T) Clause Surjective Axiom Invariant.
 /// Every clause in the solver is surjectively traced back to either a problem
@@ -48,8 +56,6 @@ pub(all) enum AxiomOrigin {
 } derive(Eq)
 
 ///|
-pub extend AxiomOrigin with Eq::{equal, not_equal}
-
 ///|
 /// Construct a signed DIMACS-style literal from variable ID (1-based) and polarity.
 pub fn mk_lit(var_id : Int, positive : Bool) -> Int {
@@ -114,6 +120,18 @@ pub fn compute_clause_conservation_hash(lits : Array[Int]) -> Int {
 }
 
 ///|
+/// Push `value` into `arr` only when it is not already present, keeping generated
+/// conflict clauses free of duplicate literals.
+pub fn push_unique(arr : Array[Int], value : Int) -> Unit {
+  for x in arr {
+    if x == value {
+      return
+    }
+  }
+  arr.push(value)
+}
+
+///|
 /// Create a new certified Clause.
 pub fn Clause::new(
   id : Int,
@@ -143,8 +161,6 @@ pub(all) enum Term {
 } derive(Eq)
 
 ///|
-pub extend Term with Eq::{equal, not_equal}
-
 ///|
 /// Linear arithmetic expression: sum_i coeff_i * x_{var_i} + constant.
 pub(all) struct LinearTerm {
@@ -244,8 +260,8 @@ pub(all) struct InnerSemigroupElem {
 ///|
 /// Neutral element of Inner Semigroup S_inner.
 pub fn InnerSemigroupElem::neutral(num_arith_vars : Int) -> InnerSemigroupElem {
-  let lb = Array::make(num_arith_vars, -1.0e12)
-  let ub = Array::make(num_arith_vars, 1.0e12)
+  let lb = Array::make(num_arith_vars, -arith_initial_bound)
+  let ub = Array::make(num_arith_vars, arith_initial_bound)
   {
     num_arith_vars,
     lower_bounds: lb,
@@ -268,33 +284,33 @@ pub fn inner_semigroup_compose(
   } else {
     s2.num_arith_vars
   }
-  let lb = Array::make(n, -1.0e12)
-  let ub = Array::make(n, 1.0e12)
+  let lb = Array::make(n, -arith_initial_bound)
+  let ub = Array::make(n, arith_initial_bound)
   let mut infeas = s1.infeasible || s2.infeasible
   for i = 0; i < n; i = i + 1 {
     let l1 = if i < s1.lower_bounds.length() {
       s1.lower_bounds[i]
     } else {
-      -1.0e12
+      -arith_initial_bound
     }
     let l2 = if i < s2.lower_bounds.length() {
       s2.lower_bounds[i]
     } else {
-      -1.0e12
+      -arith_initial_bound
     }
     let u1 = if i < s1.upper_bounds.length() {
       s1.upper_bounds[i]
     } else {
-      1.0e12
+      arith_initial_bound
     }
     let u2 = if i < s2.upper_bounds.length() {
       s2.upper_bounds[i]
     } else {
-      1.0e12
+      arith_initial_bound
     }
     lb[i] = l1.max(l2)
     ub[i] = u1.min(u2)
-    if lb[i] > ub[i] + 1.0e-9 {
+    if lb[i] > ub[i] + tol_eps {
       infeas = true
     }
   }
@@ -397,7 +413,7 @@ pub fn DualLayerCDN::map_outer_to_inner(
         } else {
           inner.upper_bounds[avar] = inner.upper_bounds[avar].min(bval)
         }
-        if inner.lower_bounds[avar] > inner.upper_bounds[avar] + 1.0e-9 {
+        if inner.lower_bounds[avar] > inner.upper_bounds[avar] + tol_eps {
           infeas = true
         }
         if qdelta > max_qap_lb {

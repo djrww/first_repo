@@ -1,6 +1,6 @@
 ///|
 /// Vector Incremental Topology (向量增量拓撲 - Planar Half-Edge DCEL Graph)
-/// and Fine-Grained Reactivity (細粒度響應式 - Push-Pull Signal/Computed Dependency DAG).
+/// and Fine-Grained Reactivity (細粒度響應式 - dirty 標記推送 + 依賴序重算 Signal/Computed DAG).
 
 ///|
 /// 2D Vector / Point in world or screen space.
@@ -10,8 +10,12 @@ pub(all) struct Vec2 {
 } derive(Eq, Debug)
 
 ///|
+pub extend Aabb with Eq::{equal, not_equal}
+
+///|
 pub extend Vec2 with Eq::{equal, not_equal}
 
+///|
 ///|
 #deprecated("Use `Debug::to_repr` instead", skip_current_package=true)
 #doc(hidden)
@@ -41,8 +45,6 @@ pub(all) struct Aabb {
 } derive(Eq, Debug)
 
 ///|
-pub extend Aabb with Eq::{equal, not_equal}
-
 ///|
 #deprecated("Use `Debug::to_repr` instead", skip_current_package=true)
 #doc(hidden)
@@ -104,6 +106,40 @@ pub fn Aabb::intersection(self : Aabb, other : Aabb) -> Aabb? {
   } else {
     None
   }
+}
+
+///|
+/// Smallest AABB enclosing every point in `points`; `None` when the list is empty.
+/// Single place for the min/max accumulation that used to be open-coded in every
+/// geometry routine.
+pub fn Aabb::from_points(points : Array[Vec2]) -> Aabb? {
+  if points.length() == 0 {
+    return None
+  }
+  let mut min_x = scan_infinity
+  let mut min_y = scan_infinity
+  let mut max_x = -scan_infinity
+  let mut max_y = -scan_infinity
+  for p in points {
+    min_x = min_x.min(p.x)
+    min_y = min_y.min(p.y)
+    max_x = max_x.max(p.x)
+    max_y = max_y.max(p.y)
+  }
+  Some(Aabb::new(min_x, min_y, max_x, max_y))
+}
+
+///|
+/// Smallest AABB enclosing every box in `boxes`; `None` when the list is empty.
+pub fn Aabb::union_all(boxes : Array[Aabb]) -> Aabb? {
+  if boxes.length() == 0 {
+    return None
+  }
+  let mut acc = boxes[0]
+  for i = 1; i < boxes.length(); i = i + 1 {
+    acc = acc.union(boxes[i])
+  }
+  Some(acc)
 }
 
 ///|
@@ -211,7 +247,7 @@ pub fn intersect_open_segments(
   let s_x = p4.x - p3.x
   let s_y = p4.y - p3.y
   let denom = r_x * s_y - r_y * s_x
-  if denom.abs() < 1.0e-9 {
+  if denom.abs() < tol_eps {
     return None
   }
   let qp_x = p3.x - p1.x
@@ -263,6 +299,8 @@ fn VectorTopologyGraph::add_raw_half_edge_pair(
 ///|
 /// Split an existing undirected edge (represented by `he_id` and its `twin_id`)
 /// at an interior vertex `mid_v`, preserving planar DCEL invariants incrementally.
+/// The two new half-edge pairs inherit the primitive, the face of the half-edge they
+/// replace, and the neighbouring `next`/`prev` links, so closed face rings stay wired.
 pub fn VectorTopologyGraph::split_edge_incremental(
   self : VectorTopologyGraph,
   he_id : Int,
@@ -272,12 +310,48 @@ pub fn VectorTopologyGraph::split_edge_incremental(
   let u = self.half_edges[he_id].origin_vertex
   let v = self.half_edges[twin_id].origin_vertex
   let prim = self.half_edges[he_id].primitive_id
+  let forward_next = self.half_edges[he_id].next_edge
+  let forward_prev = self.half_edges[he_id].prev_edge
+  let forward_face = self.half_edges[he_id].face_id
+  let twin_next = self.half_edges[twin_id].next_edge
+  let twin_prev = self.half_edges[twin_id].prev_edge
+  let twin_face = self.half_edges[twin_id].face_id
   self.half_edges[he_id].active = false
   self.half_edges[twin_id].active = false
   let e1 = self.add_raw_half_edge_pair(u, mid_v, prim)
   let e2 = self.add_raw_half_edge_pair(mid_v, v, prim)
+  let t1 = self.half_edges[e1].twin_id
+  let t2 = self.half_edges[e2].twin_id
+  // Forward chain: (forward_prev) -> e1 -> e2 -> (forward_next)
+  let has_forward_prev = forward_prev != twin_id && forward_prev != he_id
+  let has_forward_next = forward_next != twin_id && forward_next != he_id
   self.half_edges[e1].next_edge = e2
   self.half_edges[e2].prev_edge = e1
+  self.half_edges[e1].prev_edge = if has_forward_prev { forward_prev } else { e2 }
+  self.half_edges[e2].next_edge = if has_forward_next { forward_next } else { e1 }
+  self.half_edges[e1].face_id = forward_face
+  self.half_edges[e2].face_id = forward_face
+  if has_forward_prev {
+    self.half_edges[forward_prev].next_edge = e1
+  }
+  if has_forward_next {
+    self.half_edges[forward_next].prev_edge = e2
+  }
+  // Twin chain: (twin_prev) -> t2 -> t1 -> (twin_next)
+  let has_twin_prev = twin_prev != he_id && twin_prev != twin_id
+  let has_twin_next = twin_next != he_id && twin_next != twin_id
+  self.half_edges[t2].next_edge = t1
+  self.half_edges[t1].prev_edge = t2
+  self.half_edges[t2].prev_edge = if has_twin_prev { twin_prev } else { t1 }
+  self.half_edges[t1].next_edge = if has_twin_next { twin_next } else { t2 }
+  self.half_edges[t1].face_id = twin_face
+  self.half_edges[t2].face_id = twin_face
+  if has_twin_prev {
+    self.half_edges[twin_prev].next_edge = t2
+  }
+  if has_twin_next {
+    self.half_edges[twin_next].prev_edge = t1
+  }
   self.incremental_splits = self.incremental_splits + 1
   self.topo_epoch = self.topo_epoch + 1
   (e1, e2)
@@ -285,8 +359,9 @@ pub fn VectorTopologyGraph::split_edge_incremental(
 
 ///|
 /// Incrementally insert a vector segment `(p_start, p_end)` into the planar topology graph.
-/// Automatically detects intersections with existing active edges, splits them at the
-/// intersection vertex, and links the new half-edge chain!
+/// Every interior crossing with an active edge is detected, the crossed edges are split at
+/// their intersection vertices, and the new segment is chained through all of them, so a
+/// segment crossing several edges is fully decomposed.
 pub fn VectorTopologyGraph::insert_segment_incremental(
   self : VectorTopologyGraph,
   p_start : Vec2,
@@ -298,10 +373,12 @@ pub fn VectorTopologyGraph::insert_segment_incremental(
   if u == v {
     return -1
   }
-  // Check if the new segment intersects any existing active forward half-edge
+  let dx = p_end.x - p_start.x
+  let dy = p_end.y - p_start.y
+  let len_sq = dx * dx + dy * dy
+  // Collect every crossing as (parameter_along_new_segment, vertex_id, half_edge_id)
+  let hits : Array[(Double, Int, Int)] = []
   let num_existing = self.half_edges.length()
-  let mut split_vid = -1
-  let mut hit_he = -1
   let mut i = 0
   while i < num_existing {
     let he = self.half_edges[i]
@@ -311,9 +388,24 @@ pub fn VectorTopologyGraph::insert_segment_incremental(
       let b = self.vertices[twin.origin_vertex].pos
       match intersect_open_segments(p_start, p_end, a, b) {
         Some(ip) => {
-          split_vid = self.upsert_vertex(ip)
-          hit_he = i
-          break
+          let vid = self.upsert_vertex(ip)
+          if vid != u && vid != v {
+            let mut duplicate = false
+            for h in hits {
+              let (_, hv, _) = h
+              if hv == vid {
+                duplicate = true
+              }
+            }
+            if !duplicate {
+              let t = if len_sq > 1.0e-18 {
+                ((ip.x - p_start.x) * dx + (ip.y - p_start.y) * dy) / len_sq
+              } else {
+                0.0
+              }
+              hits.push((t, vid, i))
+            }
+          }
         }
         None => ()
       }
@@ -321,16 +413,45 @@ pub fn VectorTopologyGraph::insert_segment_incremental(
     i = i + 2
   }
   self.topo_epoch = self.topo_epoch + 1
-  if hit_he != -1 && split_vid != -1 && split_vid != u && split_vid != v {
-    let _ = self.split_edge_incremental(hit_he, split_vid)
-    let first_he = self.add_raw_half_edge_pair(u, split_vid, primitive_id)
-    let second_he = self.add_raw_half_edge_pair(split_vid, v, primitive_id)
-    self.half_edges[first_he].next_edge = second_he
-    self.half_edges[second_he].prev_edge = first_he
-    first_he
-  } else {
-    self.add_raw_half_edge_pair(u, v, primitive_id)
+  if hits.length() == 0 {
+    return self.add_raw_half_edge_pair(u, v, primitive_id)
   }
+  // Order the crossings along the new segment (insertion sort on the parameter)
+  for a = 1; a < hits.length(); a = a + 1 {
+    let key = hits[a]
+    let (key_t, _, _) = key
+    let mut b = a - 1
+    let mut moving = true
+    while b >= 0 && moving {
+      let (prev_t, _, _) = hits[b]
+      if prev_t > key_t {
+        hits[b + 1] = hits[b]
+        b = b - 1
+      } else {
+        moving = false
+      }
+    }
+    hits[b + 1] = key
+  }
+  // Split every crossed edge at its own intersection vertex
+  for h in hits {
+    let (_, vid, he_id) = h
+    let _ = self.split_edge_incremental(he_id, vid)
+  }
+  // Chain the sub-segments of the new primitive through the crossings
+  let segments : Array[Int] = []
+  let mut prev_v = u
+  for h in hits {
+    let (_, vid, _) = h
+    segments.push(self.add_raw_half_edge_pair(prev_v, vid, primitive_id))
+    prev_v = vid
+  }
+  segments.push(self.add_raw_half_edge_pair(prev_v, v, primitive_id))
+  for a = 0; a + 1 < segments.length(); a = a + 1 {
+    self.half_edges[segments[a]].next_edge = segments[a + 1]
+    self.half_edges[segments[a + 1]].prev_edge = segments[a]
+  }
+  segments[0]
 }
 
 ///|
@@ -444,7 +565,6 @@ pub(all) enum ReactiveNodeKind {
   SourceSignal
   ComputedSum
   ComputedScale(Double)
-  ComputedAabbOffset
 }
 
 ///|
@@ -462,7 +582,7 @@ pub(all) struct ReactiveNode {
 
 ///|
 /// Fine-Grained Reactive Graph (細粒度響應式系統):
-/// Tracks exact signal-to-computed-to-primitive dependencies with glitch-free
+/// Tracks the signal-to-computed-to-primitive dependencies with glitch-free
 /// topological propagation so only mutated vector primitives and their dirty rects
 /// are recomputed and re-rasterized.
 pub(all) struct FineGrainedReactiveGraph {
@@ -528,7 +648,8 @@ pub fn FineGrainedReactiveGraph::create_computed(
       self.nodes[d].subscribers.push(id)
     }
   }
-  self.evaluate_node(id)
+  // The node is intentionally left dirty: evaluating it here could read a dependency that
+  // is created later, so the first `propagate_dirty` evaluates it in dependency order.
   id
 }
 
@@ -571,15 +692,8 @@ fn FineGrainedReactiveGraph::evaluate_node(
       } else {
         0.0
       }
-    ComputedAabbOffset => {
-      let mut acc = 0.0
-      for d in node.deps {
-        acc = acc + self.nodes[d].value
-      }
-      acc
-    }
   }
-  let changed = (new_val - node.value).abs() > 1.0e-12 || node.version == 0
+  let changed = (new_val - node.value).abs() > tol_eps_tight || node.version == 0
   self.nodes[node_id].value = new_val
   self.nodes[node_id].dirty = false
   if changed {
@@ -599,7 +713,7 @@ pub fn FineGrainedReactiveGraph::set_signal(
   if signal_id < 0 || signal_id >= self.nodes.length() {
     return
   }
-  if (self.nodes[signal_id].value - new_val).abs() <= 1.0e-12 {
+  if (self.nodes[signal_id].value - new_val).abs() <= tol_eps_tight {
     return
   }
   self.nodes[signal_id].value = new_val
@@ -625,14 +739,52 @@ pub fn FineGrainedReactiveGraph::set_signal(
 }
 
 ///|
+/// Dependency-first (post-order) evaluation order over the currently dirty nodes.
+/// Computed nodes are therefore always evaluated after the nodes they depend on, whatever
+/// order they were created in, which is what makes the propagation glitch-free.
+fn FineGrainedReactiveGraph::dirty_evaluation_order(
+  self : FineGrainedReactiveGraph,
+) -> Array[Int] {
+  let n = self.nodes.length()
+  let state = Array::make(n, 0) // 0 = unvisited, 1 = in progress, 2 = finished
+  let order : Array[Int] = []
+  let stack : Array[(Int, Int)] = [] // (node id, next dependency index)
+  for start = 0; start < n; start = start + 1 {
+    if !self.nodes[start].dirty || state[start] != 0 {
+      continue
+    }
+    state[start] = 1
+    stack.push((start, 0))
+    while stack.length() > 0 {
+      let top = stack[stack.length() - 1]
+      let (node_id, dep_idx) = top
+      let deps = self.nodes[node_id].deps
+      if dep_idx < deps.length() {
+        stack[stack.length() - 1] = (node_id, dep_idx + 1)
+        let dep = deps[dep_idx]
+        if dep >= 0 && dep < n && state[dep] == 0 && self.nodes[dep].dirty {
+          state[dep] = 1
+          stack.push((dep, 0))
+        }
+      } else {
+        let _ = stack.pop()
+        state[node_id] = 2
+        order.push(node_id)
+      }
+    }
+  }
+  order
+}
+
+///|
 /// Glitch-free topological propagation of all dirty computed nodes.
-/// Returns the exact list of primitive IDs invalidated in this reactive transaction.
+/// Returns the list of primitive IDs invalidated in this reactive transaction.
 pub fn FineGrainedReactiveGraph::propagate_dirty(
   self : FineGrainedReactiveGraph,
 ) -> Array[Int] {
   self.propagation_passes = self.propagation_passes + 1
-  // Nodes are created in topological order (deps always have id < computed_id)
-  for i = 0; i < self.nodes.length(); i = i + 1 {
+  let order = self.dirty_evaluation_order()
+  for i in order {
     if self.nodes[i].dirty {
       self.evaluate_node(i)
     }
