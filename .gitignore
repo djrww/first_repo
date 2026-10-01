@@ -1,0 +1,36 @@
+# MoonBit Build & Package Artifacts
+_build/
+target/
+target
+.mooncakes/
+.moonagent/
+*.wasm
+*.wat
+*.cmi
+*.cmo
+*.cmx
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# MoonBit Test & Coverage Outputs
+uncovered.log
+coverage/
+*.profraw
+*.profdata
+moonbit_coverage_*.json
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+.vscode/
+.idea/
+*.log
+.env
+.env.*

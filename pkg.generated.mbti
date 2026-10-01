@@ -1,0 +1,772 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "username/omt_cdcl_solver"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn blend_src_over(ColorRgba, ColorRgba) -> ColorRgba
+
+pub fn compare_exponents_grlex(Array[Int], Array[Int]) -> Int
+
+pub fn compute_clause_conservation_hash(Array[Int]) -> Int
+
+pub fn compute_spoly(MultivariatePoly, MultivariatePoly) -> MultivariatePoly
+
+pub fn eval_analytical_sdf(SdfShapeKind, Vec2) -> Double
+
+pub fn execute_fragment_shader(FragmentShaderProgram, Vec2, Vec2, ColorRgba, SdfTextureAtlas) -> ColorRgba
+
+pub fn execute_vertex_shader(GpuVertex, Affine2D) -> GpuVertex
+
+pub fn generate_qap_assignment_cnf(Int, Int, Int) -> Array[Clause]
+
+pub fn inner_semigroup_compose(InnerSemigroupElem, InnerSemigroupElem) -> InnerSemigroupElem
+
+pub fn intersect_open_segments(Vec2, Vec2, Vec2, Vec2) -> Vec2?
+
+pub fn is_lit_false(Int, Array[TruthVal]) -> Bool
+
+pub fn is_lit_true(Int, Array[TruthVal]) -> Bool
+
+pub fn lit_neg(Int) -> Int
+
+pub fn lit_sign(Int) -> Bool
+
+pub fn lit_var(Int) -> Int
+
+pub fn mk_lit(Int, Bool) -> Int
+
+pub fn morton_encode_2d(Int, Int) -> Int
+
+pub fn outer_monoid_compose(OuterMonoidElem, OuterMonoidElem) -> OuterMonoidElem
+
+pub fn poly_subtract_scaled_shifted(MultivariatePoly, MultivariatePoly, Double, Array[Int]) -> MultivariatePoly
+
+pub fn reduce_poly_modulo_ideal(MultivariatePoly, Array[MultivariatePoly]) -> MultivariatePoly
+
+pub fn run_cac_ideal_and_conservation_scenario() -> (Double, Bool, Bool, Int)
+
+pub fn run_incremental_rendering_system_scenario() -> (FrameRenderMetrics, FrameRenderMetrics, Int, Int)
+
+pub fn run_lazy_smt_lra_lia_euf_omt_scenario() -> OmtSolveResult
+
+pub fn run_lra_vs_lia_integrality_cut_scenario() -> OmtSolveResult
+
+pub fn run_qap_lrb_hybrid6_scenario() -> OmtSolveResult
+
+pub fn sdf_smoothstep(Double, Double, Double) -> Double
+
+pub fn simplify_stroke_rdp(Array[Vec2], Double) -> Array[Vec2]
+
+// Errors
+
+// Types and methods
+pub(all) struct Aabb {
+  min_x : Double
+  min_y : Double
+  max_x : Double
+  max_y : Double
+} derive(Eq, @debug.Debug)
+pub fn Aabb::area(Self) -> Double
+pub fn Aabb::equal(Self, Self) -> Bool
+pub fn Aabb::inflate(Self, Double) -> Self
+pub fn Aabb::intersection(Self, Self) -> Self?
+pub fn Aabb::intersects(Self, Self) -> Bool
+pub fn Aabb::new(Double, Double, Double, Double) -> Self
+pub fn Aabb::not_equal(Self, Self) -> Bool
+pub fn Aabb::union(Self, Self) -> Self
+
+pub(all) struct AdaptiveOptimalLemmaEngine {
+  mut best_objective : Double
+  mut has_incumbent : Bool
+  best_assignment : Array[TruthVal]
+  mut best_arith_assignment : Array[Double]
+  generated_lemmas : Array[Clause]
+}
+pub fn AdaptiveOptimalLemmaEngine::new(Int) -> Self
+pub fn AdaptiveOptimalLemmaEngine::record_incumbent_and_synthesize_lemma(Self, Array[TruthVal], Array[Double], Array[Double], Double, LrbBrancher, Int) -> Clause?
+
+pub(all) struct Affine2D {
+  m00 : Double
+  m01 : Double
+  m10 : Double
+  m11 : Double
+  tx : Double
+  ty : Double
+}
+pub fn Affine2D::identity() -> Self
+
+pub(all) enum ArithOp {
+  Le
+  Ge
+  Eq
+  Lt
+  Gt
+} derive(Eq)
+pub fn ArithOp::equal(Self, Self) -> Bool
+pub fn ArithOp::not_equal(Self, Self) -> Bool
+
+pub(all) enum AxiomOrigin {
+  ProblemInput
+  UipResolution(Int, Int)
+  EufCongruenceAxiom(Int, Int)
+  KleisliUnificationAxiom(Int)
+  LraFarkasAxiom(Int)
+  LiaIntegralityCut(Int)
+  QapDiscretePruneAxiom(Int)
+  CacIdealReductionAxiom(Int)
+  LrbOptimalLemma(Int)
+} derive(Eq)
+pub fn AxiomOrigin::equal(Self, Self) -> Bool
+pub fn AxiomOrigin::not_equal(Self, Self) -> Bool
+
+pub(all) struct BbfChannelMsg {
+  src_node : Int
+  dst_node : Int
+  lit_payload : Int
+  bound_payload : Double
+}
+
+pub(all) struct BbfDistributedSnapshot {
+  decision_level : Int
+  trail_height : Int
+  uf_parent_snapshot : Array[Int]
+  uf_rank_snapshot : Array[Int]
+  proof_edges_len : Int
+  lra_lb_snapshot : Array[Double]
+  lra_ub_snapshot : Array[Double]
+  incumbent_obj : Double
+  channel_log : Array[BbfChannelMsg]
+  consistent_cut_verified : Bool
+}
+
+pub(all) struct BbfSnapshotManager {
+  snapshots : Array[BbfDistributedSnapshot]
+  active_channel_msgs : Array[BbfChannelMsg]
+  mut total_snapshots_taken : Int
+  mut total_restorations : Int
+}
+pub fn BbfSnapshotManager::capture_snapshot(Self, Int, Int, HpaCongruenceClosure, Array[Double], Array[Double], Double) -> BbfDistributedSnapshot
+pub fn BbfSnapshotManager::new() -> Self
+pub fn BbfSnapshotManager::record_channel_message(Self, Int, Int, Int, Double) -> Unit
+pub fn BbfSnapshotManager::restore_to_level(Self, Int, HpaCongruenceClosure, Array[Double], Array[Double]) -> BbfDistributedSnapshot?
+
+pub(all) struct Clause {
+  id : Int
+  lits : Array[Int]
+  mut activity : Double
+  mut lbd : Int
+  learnt : Bool
+  origin : AxiomOrigin
+  conservation_hash : Int
+}
+pub fn Clause::new(Int, Array[Int], Bool, Int, AxiomOrigin) -> Self
+
+pub(all) struct ColorRgba {
+  r : Double
+  g : Double
+  b : Double
+  a : Double
+} derive(Eq, @debug.Debug)
+pub fn ColorRgba::equal(Self, Self) -> Bool
+pub fn ColorRgba::lerp(Self, Self, Double) -> Self
+pub fn ColorRgba::new(Double, Double, Double, Double) -> Self
+pub fn ColorRgba::not_equal(Self, Self) -> Bool
+
+pub(all) struct CylindricalAlgebraicCovering {
+  num_arith_vars : Int
+  ideal_generators : Array[MultivariatePoly]
+  active_constraints : Array[(MultivariatePoly, ArithOp, Double, Int)]
+  mut ideal_reductions_count : Int
+  mut cac_pruned_cells : Int
+}
+pub fn CylindricalAlgebraicCovering::add_constraint(Self, MultivariatePoly, ArithOp, Double, Int) -> Unit
+pub fn CylindricalAlgebraicCovering::add_ideal_generator(Self, MultivariatePoly) -> Unit
+pub fn CylindricalAlgebraicCovering::check_cylindrical_covering(Self, Array[Double], Array[Double], Array[Double], Int) -> Clause?
+pub fn CylindricalAlgebraicCovering::new(Int) -> Self
+
+pub(all) struct DirtyRectTracker {
+  viewport_width : Double
+  viewport_height : Double
+  coalesce_ratio : Double
+  raw_dirty_rects : Array[Aabb]
+  coalesced_dirty_rects : Array[Aabb]
+  mut total_coalesce_merges : Int
+}
+pub fn DirtyRectTracker::coalesce_dirty_regions(Self) -> Array[Aabb]
+pub fn DirtyRectTracker::mark_dirty_aabb(Self, Aabb) -> Unit
+pub fn DirtyRectTracker::new(Double, Double, Double) -> Self
+
+pub(all) struct DualLayerCDN {
+  num_bool_vars : Int
+  num_arith_vars : Int
+  var_theory_effects : Array[(Int, Bool, Int, Bool, Double, Double)]
+  euf_var_effects : Array[(Int, Bool, Int, Int)]
+}
+pub fn DualLayerCDN::map_outer_to_inner(Self, OuterMonoidElem) -> InnerSemigroupElem
+pub fn DualLayerCDN::new(Int, Int) -> Self
+pub fn DualLayerCDN::register_arith_mapping(Self, Int, Bool, Int, Bool, Double, Double) -> Unit
+pub fn DualLayerCDN::register_euf_mapping(Self, Int, Bool, Int, Int) -> Unit
+
+pub(all) struct FineGrainedReactiveGraph {
+  nodes : Array[ReactiveNode]
+  dirty_primitives_queue : Array[Int]
+  mut propagation_passes : Int
+  mut recomputed_nodes_count : Int
+}
+pub fn FineGrainedReactiveGraph::create_computed(Self, ReactiveNodeKind, Array[Int], Int) -> Int
+pub fn FineGrainedReactiveGraph::create_signal(Self, Double, Int) -> Int
+pub fn FineGrainedReactiveGraph::new() -> Self
+pub fn FineGrainedReactiveGraph::propagate_dirty(Self) -> Array[Int]
+pub fn FineGrainedReactiveGraph::set_signal(Self, Int, Double) -> Unit
+
+pub(all) enum FragmentShaderProgram {
+  FlatColorShader(ColorRgba)
+  LinearGradientShader(Vec2, Vec2, ColorRgba, ColorRgba)
+  SdfContourShader(ColorRgba, ColorRgba, Double, Double)
+  ProceduralCheckerShader(ColorRgba, ColorRgba, Double)
+}
+
+pub(all) struct FrameRenderMetrics {
+  frame_index : Int
+  dirty_primitives_count : Int
+  coalesced_dirty_rects_count : Int
+  dirty_area_ratio : Double
+  primitives_drawn : Int
+  primitives_locally_culled : Int
+  pixels_shaded_in_frame : Int
+  subsamples_evaluated_in_frame : Int
+  zero_copy_in_place_updates : Int
+  active_sparse_tiles : Int
+  stroke_clusters_count : Int
+  topology_vertices : Int
+  topology_half_edges : Int
+}
+
+pub(all) struct Framebuffer {
+  width : Int
+  height : Int
+  pixels : Array[ColorRgba]
+  bg_color : ColorRgba
+  mut pixels_shaded_total : Int
+  mut subsamples_tested_total : Int
+}
+pub fn Framebuffer::clear_scissor_rect(Self, Aabb) -> Int
+pub fn Framebuffer::get_pixel(Self, Int, Int) -> ColorRgba
+pub fn Framebuffer::new(Int, Int, ColorRgba) -> Self
+pub fn Framebuffer::rasterize_slice_zero_copy_local(Self, ZeroCopyVertexArena, ZeroCopyBufferSlice, Affine2D, FragmentShaderProgram, SdfTextureAtlas, Aabb) -> Int
+pub fn Framebuffer::rasterize_triangle_local_aa(Self, GpuVertex, GpuVertex, GpuVertex, FragmentShaderProgram, SdfTextureAtlas, Aabb) -> Int
+
+pub(all) struct GpuVertex {
+  x : Double
+  y : Double
+  u : Double
+  v : Double
+  color : ColorRgba
+}
+
+pub(all) struct GuardedArithConstraint {
+  guard_lit : Int
+  term : LinearTerm
+  op : ArithOp
+  rhs : Double
+  is_lia : Bool
+}
+
+pub(all) struct GuardedEufConstraint {
+  guard_lit : Int
+  lhs_term : Int
+  rhs_term : Int
+  is_eq : Bool
+  use_kleisli : Bool
+}
+
+pub(all) struct HalfEdge {
+  id : Int
+  mut origin_vertex : Int
+  mut twin_id : Int
+  mut next_edge : Int
+  mut prev_edge : Int
+  mut face_id : Int
+  primitive_id : Int
+  mut active : Bool
+}
+
+pub(all) struct HomomorphicConservationIdeal {
+  num_vars : Int
+  mut verified_resolutions : Int
+  mut verified_clauses : Int
+}
+pub fn HomomorphicConservationIdeal::eval_clause_ideal_polynomial(Self, Clause, Array[TruthVal]) -> Double
+pub fn HomomorphicConservationIdeal::new(Int) -> Self
+pub fn HomomorphicConservationIdeal::verify_all_clauses_conserved(Self, Array[Clause], Array[TruthVal]) -> Bool
+pub fn HomomorphicConservationIdeal::verify_resolution_conservation(Self, Clause, Clause, Clause) -> Bool
+
+pub(all) struct HpaCongruenceClosure {
+  terms : Array[Term]
+  parent : Array[Int]
+  rank : Array[Int]
+  use_list : Array[Array[Int]]
+  pending_merges : Array[(Int, Int, Int)]
+  proof_edges : Array[(Int, Int, Int)]
+  disequalities : Array[(Int, Int, Int)]
+}
+pub fn HpaCongruenceClosure::are_app_signatures_congruent(Self, Int, Int) -> Bool
+pub fn HpaCongruenceClosure::are_congruent(Self, Int, Int) -> Bool
+pub fn HpaCongruenceClosure::assert_eq(Self, Int, Int, Int) -> Unit
+pub fn HpaCongruenceClosure::assert_neq(Self, Int, Int, Int) -> Unit
+pub fn HpaCongruenceClosure::explain_path(Self, Int, Int) -> Array[Int]
+pub fn HpaCongruenceClosure::find(Self, Int) -> Int
+pub fn HpaCongruenceClosure::intern_term(Self, Term) -> Int
+pub fn HpaCongruenceClosure::new() -> Self
+pub fn HpaCongruenceClosure::propagate_star_closure(Self) -> Array[Int]?
+
+pub(all) struct Hybrid6DynamicLowerBound {
+  mut lb1_lra_relaxation : Double
+  mut lb2_lia_integrality : Double
+  mut lb3_qap_gilmore_lawler : Double
+  mut lb4_svm_rkhs_margin : Double
+  mut lb5_euf_congruence_partition : Double
+  mut lb6_gnn_neural_calibrated : Double
+  mut fused_lower_bound : Double
+  mut prune_triggered_count : Int
+}
+pub fn Hybrid6DynamicLowerBound::new() -> Self
+pub fn Hybrid6DynamicLowerBound::should_prune(Self, Double) -> Bool
+pub fn Hybrid6DynamicLowerBound::update_and_fuse(Self, Array[TruthVal], Array[Double], Array[Double], Array[Double], Array[Double], Bool, Double, Array[(Int, Int)], OmtGnn, SvmKernelMapper) -> Double
+
+pub(all) struct IncrementalRenderEngine {
+  width : Int
+  height : Int
+  topology : VectorTopologyGraph
+  reactive : FineGrainedReactiveGraph
+  rtree : RTree
+  sparse_grid : SparseSpatialGrid
+  stroke_clusterer : StrokeClusterEngine
+  dirty_tracker : DirtyRectTracker
+  vbo_arena : ZeroCopyVertexArena
+  sdf_atlas : SdfTextureAtlas
+  framebuffer : Framebuffer
+  primitives : Array[RenderPrimitive]
+  mut frame_counter : Int
+}
+pub fn IncrementalRenderEngine::add_clustered_vector_stroke(Self, Array[StrokePoint], Double, ColorRgba) -> (Int, Int)
+pub fn IncrementalRenderEngine::add_vector_quad(Self, Double, Double, Double, Double, ColorRgba, FragmentShaderProgram) -> Int
+pub fn IncrementalRenderEngine::local_cull_for_dirty_rect(Self, Aabb) -> Array[Int]
+pub fn IncrementalRenderEngine::new(Int, Int, Double) -> Self
+pub fn IncrementalRenderEngine::render_incremental_frame(Self) -> FrameRenderMetrics
+pub fn IncrementalRenderEngine::set_primitive_translation_reactive(Self, Int, Double, Double) -> Unit
+
+pub(all) struct InnerSemigroupElem {
+  num_arith_vars : Int
+  lower_bounds : Array[Double]
+  upper_bounds : Array[Double]
+  euf_merges : Array[(Int, Int)]
+  qap_lower_bound : Double
+  infeasible : Bool
+}
+pub fn InnerSemigroupElem::neutral(Int) -> Self
+
+pub(all) struct KleisliUnificationGraph {
+  hpa : HpaCongruenceClosure
+  subst_map : Array[(Int, Int, Int)]
+}
+pub fn KleisliUnificationGraph::apply_monad_mu(Self, Int) -> Int
+pub fn KleisliUnificationGraph::lookup_subst(Self, Int) -> (Int, Int)?
+pub fn KleisliUnificationGraph::new(HpaCongruenceClosure) -> Self
+pub fn KleisliUnificationGraph::occurs_in(Self, Int, Int) -> Bool
+pub fn KleisliUnificationGraph::unify_kleisli(Self, Int, Int, Int) -> Array[Int]?
+
+pub(all) struct LazySmtOmtSolver {
+  num_vars : Int
+  num_arith_vars : Int
+  clauses : Array[Clause]
+  values : Array[TruthVal]
+  trail : Array[Int]
+  trail_lim : Array[Int]
+  var_level : Array[Int]
+  var_reason : Array[Int]
+  bool_obj_weights : Array[Double]
+  arith_obj_weights : Array[Double]
+  cdn : DualLayerCDN
+  hpa : HpaCongruenceClosure
+  kleisli : KleisliUnificationGraph
+  euf_constraints : Array[GuardedEufConstraint]
+  euf_var_pairs : Array[(Int, Int)]
+  bbf : BbfSnapshotManager
+  gnn : OmtGnn
+  svm : SvmKernelMapper
+  lrb : LrbBrancher
+  hybrid6 : Hybrid6DynamicLowerBound
+  mut qap : QapIncrementalPruner
+  opt_lemma_engine : AdaptiveOptimalLemmaEngine
+  cac : CylindricalAlgebraicCovering
+  conservation_ideal : HomomorphicConservationIdeal
+  axiom_projector : SurjectiveAxiomProjector
+  lra_lia : LraLiaTheorySolver
+  mut total_decisions : Int
+  mut total_propagations : Int
+}
+pub fn LazySmtOmtSolver::add_clause(Self, Array[Int], Bool, AxiomOrigin) -> Int
+pub fn LazySmtOmtSolver::add_euf_constraint(Self, Int, Int, Int, Bool, Bool) -> Unit
+pub fn LazySmtOmtSolver::analyze_conflict_1uip(Self, Clause) -> (Array[Int], Int, Int, Array[Int], Array[Int])
+pub fn LazySmtOmtSolver::attach_qap_pruner(Self, QapIncrementalPruner) -> Unit
+pub fn LazySmtOmtSolver::backjump(Self, Int) -> Unit
+pub fn LazySmtOmtSolver::bcp_propagate(Self) -> Int?
+pub fn LazySmtOmtSolver::check_lazy_theories(Self) -> Clause?
+pub fn LazySmtOmtSolver::decision_level(Self) -> Int
+pub fn LazySmtOmtSolver::evaluate_total_objective(Self) -> Double
+pub fn LazySmtOmtSolver::new(Int, Int, Array[Bool], Array[Double], Array[Double]) -> Self
+pub fn LazySmtOmtSolver::solve_omt(Self, Int) -> OmtSolveResult
+
+pub(all) struct LinearTerm {
+  coeffs : Array[(Int, Double)]
+  constant : Double
+}
+pub fn LinearTerm::eval(Self, Array[Double]) -> Double
+
+pub(all) struct LraLiaTheorySolver {
+  num_arith_vars : Int
+  base_lb : Array[Double]
+  base_ub : Array[Double]
+  cur_lb : Array[Double]
+  cur_ub : Array[Double]
+  lb_reason : Array[Int]
+  ub_reason : Array[Int]
+  is_integer : Array[Bool]
+  witness : Array[Double]
+  constraints : Array[GuardedArithConstraint]
+  mut farkas_conflicts : Int
+  mut lia_cuts : Int
+}
+pub fn LraLiaTheorySolver::add_constraint(Self, Int, LinearTerm, ArithOp, Double, Bool) -> Unit
+pub fn LraLiaTheorySolver::new(Int, Array[Bool]) -> Self
+pub fn LraLiaTheorySolver::propagate_and_check(Self, Array[TruthVal], Array[Double], Int) -> Clause?
+pub fn LraLiaTheorySolver::set_var_domain(Self, Int, Double, Double) -> Unit
+
+pub(all) struct LrbBrancher {
+  num_vars : Int
+  mut alpha : Double
+  mut total_conflicts : Int
+  ema_lr : Array[Double]
+  assigned_at : Array[Int]
+  participated : Array[Int]
+  reason_side : Array[Int]
+  saved_phase : Array[Bool]
+}
+pub fn LrbBrancher::new(Int) -> Self
+pub fn LrbBrancher::on_assign(Self, Int, Bool) -> Unit
+pub fn LrbBrancher::on_conflict(Self, Array[Int], Array[Int], Array[TruthVal]) -> Unit
+pub fn LrbBrancher::on_unassign(Self, Int) -> Unit
+pub fn LrbBrancher::select_branch_literal(Self, Array[TruthVal], OmtGnn, SvmKernelMapper) -> Int?
+
+pub(all) struct MultivariatePoly {
+  num_vars : Int
+  terms : Array[PolyMonomial]
+}
+pub fn MultivariatePoly::eval(Self, Array[Double]) -> Double
+pub fn MultivariatePoly::normalize(Self) -> Self
+
+pub(all) struct OmtGnn {
+  num_vars : Int
+  embed_dim : Int
+  var_embeddings : Array[Array[Double]]
+  clause_embeddings : Array[Array[Double]]
+  euf_edges : Array[(Int, Int)]
+  obj_weights : Array[Double]
+  mut message_passing_rounds : Int
+}
+pub fn OmtGnn::add_euf_congruence_edge(Self, Int, Int) -> Unit
+pub fn OmtGnn::forward_message_passing(Self, Array[Clause], Array[Double], Int) -> Unit
+pub fn OmtGnn::new(Int, Array[Clause], Array[Double]) -> Self
+pub fn OmtGnn::predict_branch_score(Self, Int, SvmKernelMapper) -> Double
+pub fn OmtGnn::predict_calibrated_lower_bound(Self, Array[TruthVal], Double) -> Double
+pub fn OmtGnn::predict_optimal_polarity(Self, Int) -> Bool
+
+pub(all) struct OmtSolveResult {
+  satisfiable : Bool
+  optimal_objective : Double
+  best_bool_model : Array[TruthVal]
+  best_arith_model : Array[Double]
+  total_conflicts : Int
+  total_decisions : Int
+  total_propagations : Int
+  hybrid6_final_lb : Double
+  qap_pruned_branches : Int
+  euf_congruence_classes : Int
+  bbf_snapshots_taken : Int
+  bbf_restorations : Int
+  cac_ideal_reductions : Int
+  conservation_ideal_verified : Bool
+  surjective_axiom_certified_clauses : Int
+}
+
+pub(all) struct OuterMonoidElem {
+  num_vars : Int
+  values : Array[TruthVal]
+  has_conflict : Bool
+  conflict_var : Int
+}
+pub fn OuterMonoidElem::identity(Int) -> Self
+
+pub(all) struct PolyMonomial {
+  coeff : Double
+  exponents : Array[Int]
+}
+
+pub(all) struct QapIncrementalPruner {
+  n : Int
+  base_var : Int
+  flow : Array[Array[Double]]
+  dist : Array[Array[Double]]
+  linear_cost : Array[Array[Double]]
+  mut pruned_branches : Int
+}
+pub fn QapIncrementalPruner::compute_incremental_lower_bound(Self, Array[TruthVal]) -> Double
+pub fn QapIncrementalPruner::evaluate_complete_assignment(Self, Array[TruthVal]) -> Double?
+pub fn QapIncrementalPruner::new(Int, Int, Array[Array[Double]], Array[Array[Double]], Array[Array[Double]]) -> Self
+pub fn QapIncrementalPruner::try_generate_pruning_clause(Self, Array[TruthVal], Double, Int) -> Clause?
+pub fn QapIncrementalPruner::var_of(Self, Int, Int) -> Int
+
+pub(all) struct RTree {
+  max_entries : Int
+  nodes : Array[RTreeNode]
+  mut root_id : Int
+  mut total_queries : Int
+  mut visited_nodes_in_queries : Int
+}
+pub fn RTree::insert(Self, Int, Aabb) -> Unit
+pub fn RTree::new(Int) -> Self
+pub fn RTree::query_aabb(Self, Aabb) -> Array[Int]
+pub fn RTree::update_primitive_aabb(Self, Int, Aabb) -> Bool
+
+pub(all) struct RTreeEntry {
+  mut aabb : Aabb
+  child_node_id : Int
+  primitive_id : Int
+}
+
+pub(all) struct RTreeNode {
+  id : Int
+  mut is_leaf : Bool
+  mut parent_id : Int
+  mut aabb : Aabb
+  entries : Array[RTreeEntry]
+}
+
+pub(all) struct ReactiveNode {
+  id : Int
+  kind : ReactiveNodeKind
+  mut value : Double
+  deps : Array[Int]
+  subscribers : Array[Int]
+  bound_primitive_id : Int
+  mut dirty : Bool
+  mut version : Int
+}
+
+pub(all) enum ReactiveNodeKind {
+  SourceSignal
+  ComputedSum
+  ComputedScale(Double)
+  ComputedAabbOffset
+}
+
+pub(all) struct RenderPrimitive {
+  id : Int
+  mut slice : ZeroCopyBufferSlice
+  mut aabb : Aabb
+  shader : FragmentShaderProgram
+  mut transform : Affine2D
+  tx_signal_id : Int
+  ty_signal_id : Int
+  computed_aabb_node_id : Int
+  mut prev_tx : Double
+  mut prev_ty : Double
+}
+
+pub(all) enum SdfShapeKind {
+  SdfCircle(Vec2, Double)
+  SdfCapsule(Vec2, Vec2, Double)
+  SdfRoundedBox(Vec2, Vec2, Double)
+}
+
+pub(all) struct SdfTextureAtlas {
+  width : Int
+  height : Int
+  texels : Array[Double]
+  mut bilinear_samples_count : Int
+}
+pub fn SdfTextureAtlas::bake_from_shapes(Int, Int, Array[SdfShapeKind]) -> Self
+pub fn SdfTextureAtlas::sample_bilinear(Self, Double, Double) -> Double
+
+pub(all) struct SparseSpatialGrid {
+  tile_size : Double
+  num_buckets : Int
+  buckets : Array[Array[SparseTileCell]]
+  mut active_tile_count : Int
+}
+pub fn SparseSpatialGrid::insert_primitive(Self, Int, Aabb) -> Unit
+pub fn SparseSpatialGrid::new(Double, Int) -> Self
+pub fn SparseSpatialGrid::query_primitives_in_rect(Self, Aabb) -> Array[Int]
+pub fn SparseSpatialGrid::remove_primitive(Self, Int, Aabb) -> Unit
+
+pub(all) struct SparseTileCell {
+  tile_x : Int
+  tile_y : Int
+  morton_key : Int
+  primitives : Array[Int]
+  mut dirty : Bool
+}
+
+pub(all) struct StrokeCluster {
+  cluster_id : Int
+  stroke_ids : Array[Int]
+  mut merged_aabb : Aabb
+  mut centroid : Vec2
+  mut total_raw_vertices : Int
+  mut total_simplified_vertices : Int
+}
+
+pub(all) struct StrokeClusterEngine {
+  spatial_radius : Double
+  clusters : Array[StrokeCluster]
+}
+pub fn StrokeClusterEngine::add_stroke_to_clusters(Self, VectorStroke) -> Int
+pub fn StrokeClusterEngine::new(Double) -> Self
+
+pub(all) struct StrokePoint {
+  pos : Vec2
+  pressure : Double
+  timestamp : Double
+}
+
+pub(all) struct SurjectiveAxiomProjector {
+  mut total_certified_clauses : Int
+  mut upper_bound_projections : Int
+  schema_coverage : Array[Int]
+}
+pub fn SurjectiveAxiomProjector::certify_clause_origin(Self, Clause) -> Bool
+pub fn SurjectiveAxiomProjector::new() -> Self
+pub fn SurjectiveAxiomProjector::project_upper_bound_clauses(Self, Array[Double], Double, Int) -> Array[Clause]
+
+pub(all) enum SvmKernelKind {
+  RbfGaussian(Double)
+  Polynomial(Double, Double, Int)
+  HybridOmtEuf(Double, Double)
+}
+
+pub(all) struct SvmKernelMapper {
+  kernel : SvmKernelKind
+  support_vectors : Array[Array[Double]]
+  alpha_y : Array[Double]
+  mut bias : Double
+  c_regularization : Double
+}
+pub fn SvmKernelMapper::decision_function(Self, Array[Double], Bool) -> Double
+pub fn SvmKernelMapper::eval_kernel(Self, Array[Double], Array[Double], Bool) -> Double
+pub fn SvmKernelMapper::fit_online_sample(Self, Array[Double], Double) -> Unit
+pub fn SvmKernelMapper::new(SvmKernelKind, Double) -> Self
+pub fn SvmKernelMapper::rkhs_spectral_margin_norm(Self) -> Double
+
+pub(all) enum Term {
+  Var(String, Int)
+  IntConst(Int)
+  RealConst(Double)
+  App(String, Array[Int])
+} derive(Eq)
+pub fn Term::equal(Self, Self) -> Bool
+pub fn Term::not_equal(Self, Self) -> Bool
+
+pub(all) enum TheoryAtom {
+  EufEq(Int, Int)
+  EufNeq(Int, Int)
+  LraConstraint(LinearTerm, ArithOp, Double)
+  LiaConstraint(LinearTerm, ArithOp, Int)
+  PolyConstraint(Int, ArithOp, Double)
+}
+
+pub(all) struct TopoFace {
+  id : Int
+  boundary_half_edge : Int
+  mut signed_area : Double
+  mut winding_number : Int
+}
+
+pub(all) struct TopoVertex {
+  id : Int
+  mut pos : Vec2
+  incident_half_edges : Array[Int]
+  mut version : Int
+}
+
+pub(all) enum TruthVal {
+  True
+  False
+  Unassigned
+} derive(Eq, @debug.Debug)
+pub fn TruthVal::equal(Self, Self) -> Bool
+pub fn TruthVal::not_equal(Self, Self) -> Bool
+
+pub(all) struct Vec2 {
+  x : Double
+  y : Double
+} derive(Eq, @debug.Debug)
+pub fn Vec2::dist(Self, Self) -> Double
+pub fn Vec2::equal(Self, Self) -> Bool
+pub fn Vec2::new(Double, Double) -> Self
+pub fn Vec2::not_equal(Self, Self) -> Bool
+
+pub(all) struct VectorStroke {
+  id : Int
+  raw_points : Array[StrokePoint]
+  simplified_points : Array[Vec2]
+  stroke_width : Double
+  aabb : Aabb
+  mean_tangent : Vec2
+}
+pub fn VectorStroke::from_samples(Int, Array[StrokePoint], Double, Double) -> Self
+
+pub(all) struct VectorTopologyGraph {
+  vertices : Array[TopoVertex]
+  half_edges : Array[HalfEdge]
+  faces : Array[TopoFace]
+  mut snap_epsilon : Double
+  mut topo_epoch : Int
+  mut incremental_splits : Int
+}
+pub fn VectorTopologyGraph::active_undirected_edge_count(Self) -> Int
+pub fn VectorTopologyGraph::euler_characteristic(Self) -> Int
+pub fn VectorTopologyGraph::insert_segment_incremental(Self, Vec2, Vec2, Int) -> Int
+pub fn VectorTopologyGraph::move_vertex_incremental(Self, Int, Vec2) -> Array[Int]
+pub fn VectorTopologyGraph::new(Double) -> Self
+pub fn VectorTopologyGraph::register_closed_face(Self, Array[Int], Int) -> Int
+pub fn VectorTopologyGraph::split_edge_incremental(Self, Int, Int) -> (Int, Int)
+pub fn VectorTopologyGraph::upsert_vertex(Self, Vec2) -> Int
+
+pub(all) struct ZeroCopyBufferSlice {
+  vbo_float_offset : Int
+  vertex_count : Int
+  ibo_index_offset : Int
+  index_count : Int
+  stride : Int
+  mut generation : Int
+}
+
+pub(all) struct ZeroCopyVertexArena {
+  raw_vbo_floats : Array[Double]
+  raw_ibo_indices : Array[Int]
+  mut zero_copy_views_issued : Int
+  mut in_place_mutations : Int
+}
+pub fn ZeroCopyVertexArena::allocate_mesh_zero_copy(Self, Array[GpuVertex], Array[Int]) -> ZeroCopyBufferSlice
+pub fn ZeroCopyVertexArena::compute_slice_aabb(Self, ZeroCopyBufferSlice) -> Aabb
+pub fn ZeroCopyVertexArena::new() -> Self
+pub fn ZeroCopyVertexArena::read_global_vertex(Self, Int) -> GpuVertex
+pub fn ZeroCopyVertexArena::translate_slice_in_place(Self, ZeroCopyBufferSlice, Double, Double) -> ZeroCopyBufferSlice
+
+// Type aliases
+
+// Traits

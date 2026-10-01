@@ -1,0 +1,5 @@
+import {
+  "djrww/omt_cdcl_solver" @lib,
+}
+
+pkgtype(kind: "executable")
