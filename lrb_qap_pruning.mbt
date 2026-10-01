@@ -661,7 +661,7 @@ pub fn AdaptiveOptimalLemmaEngine::record_incumbent_and_synthesize_lemma(
   if lemma_lits.length() == 0 {
     return None
   }
-  let scaled_bound = (obj_val * 100.0).to_int()
+  let scaled_bound = (obj_val * lrb_lemma_bound_scale).to_int()
   let lemma = Clause::new(
     next_clause_id,
     lemma_lits,

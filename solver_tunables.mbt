@@ -172,6 +172,11 @@ let lrb_fuse_gnn_weight : Double = 0.30
 /// Locality decay applied to the learning rate of not-yet-assigned variables on conflict.
 let lrb_locality_decay : Double = 0.95
 
+///|
+/// Scale factor used to encode an objective upper bound as the integer payload of
+/// `LrbOptimalLemma` (`(bound * lrb_lemma_bound_scale).to_int()`).
+let lrb_lemma_bound_scale : Double = 100.0
+
 // ---------------------------------------------------------------------------
 // Vertex buffer layout
 // ---------------------------------------------------------------------------

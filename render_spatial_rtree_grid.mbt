@@ -260,7 +260,9 @@ pub fn RTree::insert(self : RTree, primitive_id : Int, aabb : Aabb) -> Unit {
 }
 
 ///|
-/// Incrementally update an existing primitive's AABB in the R-tree and propagate tight bounds upward.
+/// Incrementally update an existing primitive's AABB in the R-tree and propagate tight bounds
+/// upward. The primitive's leaf is located by scanning the leaf nodes (O(N)); the tree does
+/// not maintain a primitive -> leaf index.
 pub fn RTree::update_primitive_aabb(
   self : RTree,
   primitive_id : Int,
@@ -348,9 +350,7 @@ pub fn morton_encode_2d(tx : Int, ty : Int) -> Int {
 pub(all) struct SparseTileCell {
   tile_x : Int
   tile_y : Int
-  morton_key : Int
   primitives : Array[Int]
-  mut dirty : Bool
 }
 
 ///|
@@ -388,12 +388,16 @@ pub fn SparseSpatialGrid::new(
 }
 
 ///|
-/// Convert a world coordinate `x` to integer tile index.
+/// Convert a world coordinate `x` to a signed integer tile index. Coordinates on the
+/// negative side of the canvas map to negative tile indices, so the grid really tiles the
+/// infinite canvas instead of folding all negative space into column/row 0.
+/// (`morton_encode_2d` still clamps the *hash* input to 0..16383; bucket collisions are
+/// harmless because a cell is identified by its exact `(tile_x, tile_y)` pair.)
 fn SparseSpatialGrid::coord_to_tile(
   self : SparseSpatialGrid,
   c : Double,
 ) -> Int {
-  (c / self.tile_size).floor().to_int().max(0)
+  (c / self.tile_size).floor().to_int()
 }
 
 ///|
@@ -415,9 +419,7 @@ fn SparseSpatialGrid::get_or_create_cell(
   bucket.push({
     tile_x: tx,
     tile_y: ty,
-    morton_key: mkey,
     primitives: [],
-    dirty: true,
   })
   self.active_tile_count = self.active_tile_count + 1
   self.total_cells_allocated = self.total_cells_allocated + 1
@@ -448,7 +450,6 @@ pub fn SparseSpatialGrid::insert_primitive(
       if !exists {
         prims.push(primitive_id)
       }
-      self.buckets[b_idx][c_idx].dirty = true
     }
   }
 }
@@ -495,8 +496,6 @@ pub fn SparseSpatialGrid::remove_primitive(
         bucket[slot] = bucket[last]
         let _ = bucket.pop()
         self.active_tile_count = (self.active_tile_count - 1).max(0)
-      } else {
-        bucket[slot].dirty = true
       }
     }
   }

@@ -164,10 +164,16 @@ pub fn run_cac_ideal_and_conservation_scenario() -> (Double, Bool, Bool, Int) {
   // relation exactly on the whole ideal variety: f <= 10 is unsatisfiable everywhere, so
   // the conflict is a proof (no sampling is involved).
   cac.add_constraint(f, Le, 10.0, 1)
+  // The declared box [-5, 5] is an assumption of this standalone check, not a guarded bound,
+  // so no bound reasons are supplied; this instance decides the relation exactly (the
+  // reduction is the constant 15), hence the unit conflict clause below is sound.
+  let no_bound_reasons : Array[Array[Int]] = []
   let cac_conflict = cac.check_cylindrical_covering(
     [0.0, 0.0],
     [-5.0, -5.0],
     [5.0, 5.0],
+    no_bound_reasons,
+    no_bound_reasons,
     0,
   )
   let cac_detected_infeasible = match cac_conflict {

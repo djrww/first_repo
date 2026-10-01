@@ -1136,6 +1136,8 @@ pub fn LazySmtOmtSolver::check_lazy_theories(
       self.lra_lia.witness,
       self.lra_lia.cur_lb,
       self.lra_lia.cur_ub,
+      self.lra_lia.lb_reasons,
+      self.lra_lia.ub_reasons,
       self.clauses.length(),
     ) {
     Some(cac_conflict) => return Some(cac_conflict)
@@ -1182,7 +1184,7 @@ pub fn LazySmtOmtSolver::check_lazy_theories(
             blocking,
             true,
             blocking.length().min(4),
-            LrbOptimalLemma((ub * 100.0).to_int()),
+            LrbOptimalLemma((ub * lrb_lemma_bound_scale).to_int()),
           ),
         )
       }
@@ -1429,7 +1431,7 @@ pub fn LazySmtOmtSolver::solve_omt(
             let _ = self.add_clause(
               block_lits,
               true,
-              LrbOptimalLemma((obj * 100.0).to_int()),
+              LrbOptimalLemma((obj * lrb_lemma_bound_scale).to_int()),
             )
           }
         }

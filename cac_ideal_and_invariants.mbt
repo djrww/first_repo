@@ -367,6 +367,16 @@ pub fn CylindricalAlgebraicCovering::add_constraint(
 }
 
 ///|
+/// Push the negation of bound-guard literal `r` into `lits`, skipping the unconditional
+/// marker 0 and keeping the clause duplicate-free.
+fn push_reason_lit(lits : Array[Int], r : Int) -> Unit {
+  if r == 0 {
+    return
+  }
+  push_unique(lits, lit_neg(r))
+}
+
+///|
 /// Execute Ring-Lifted Cylindrical Algebraic Covering (CAC) ideal reduction over the box
 /// `[var_lb[k], var_ub[k]]`.
 /// Returns `Some(conflict_clause)` only when the violation is *provable* for every point of
@@ -377,11 +387,16 @@ pub fn CylindricalAlgebraicCovering::add_constraint(
 ///     everywhere on the box.
 /// Point sampling alone never produces a conflict: a finite sample cannot establish that a
 /// whole cylinder is covered, so an inconclusive cell is reported as `None`.
+/// The returned clause carries `¬reason_lit` of the violated constraint together with the
+/// negated bound-guard literals recorded in `lb_reasons`/`ub_reasons` for every variable of
+/// the reduced polynomial; exact-variety conflicts need no bound reasons.
 pub fn CylindricalAlgebraicCovering::check_cylindrical_covering(
   self : CylindricalAlgebraicCovering,
   base_sample : Array[Double],
   var_lb : Array[Double],
   var_ub : Array[Double],
+  lb_reasons : Array[Array[Int]],
+  ub_reasons : Array[Array[Int]],
   next_clause_id : Int,
 ) -> Clause? {
   let _ = base_sample
@@ -404,8 +419,10 @@ pub fn CylindricalAlgebraicCovering::check_cylindrical_covering(
     let (poly, op, rhs, rlit) = item
     let reduced = reduce_poly_modulo_ideal(poly, self.ideal_generators)
     self.ideal_reductions_count = self.ideal_reductions_count + 1
-    let proven_violation = if is_constant_poly(reduced) {
-      // The relation is decided exactly on the whole ideal variety
+    let exact_reduction = is_constant_poly(reduced)
+    let proven_violation = if exact_reduction {
+      // The relation is decided exactly on the whole ideal variety, so no bound of the
+      // enclosing box participates in the decision.
       !eval_arith_op(reduced.terms[0].coeff, op, rhs)
     } else {
       let (min_val, max_val) = interval_eval_poly(reduced, box_lb, box_ub)
@@ -420,8 +437,35 @@ pub fn CylindricalAlgebraicCovering::check_cylindrical_covering(
     if proven_violation {
       self.cac_pruned_cells = self.cac_pruned_cells + 1
       let conflict_lits : Array[Int] = []
-      if rlit != 0 {
-        conflict_lits.push(lit_neg(rlit))
+      push_reason_lit(conflict_lits, rlit)
+      if !exact_reduction {
+        // The interval decision used the current bounds of every variable occurring in the
+        // reduced polynomial. Each such bound is only justified while the guards recorded
+        // in the caller's reason sets hold, so the lemma must carry their negations too; a
+        // unit clause would claim a conflict the active formula does not entail whenever a
+        // participating bound was itself derived under a guard.
+        let used_vars = Array::make(self.num_arith_vars, false)
+        for term in reduced.terms {
+          for i = 0; i < term.exponents.length() && i < used_vars.length(); i = i + 1 {
+            if term.exponents[i] != 0 {
+              used_vars[i] = true
+            }
+          }
+        }
+        for k = 0; k < self.num_arith_vars; k = k + 1 {
+          if used_vars[k] {
+            if k < lb_reasons.length() {
+              for r in lb_reasons[k] {
+                push_reason_lit(conflict_lits, r)
+              }
+            }
+            if k < ub_reasons.length() {
+              for r in ub_reasons[k] {
+                push_reason_lit(conflict_lits, r)
+              }
+            }
+          }
+        }
       }
       return Some(
         Clause::new(
@@ -683,7 +727,7 @@ pub fn SurjectiveAxiomProjector::project_upper_bound_clauses(
         [mk_lit(v, false)],
         true,
         1,
-        LrbOptimalLemma((ub_limit * 100.0).to_int()),
+        LrbOptimalLemma((ub_limit * lrb_lemma_bound_scale).to_int()),
       )
       let _ = self.certify_clause_origin(c)
       projected.push(c)
@@ -703,7 +747,7 @@ pub fn SurjectiveAxiomProjector::project_upper_bound_clauses(
             [mk_lit(u, false), mk_lit(v, false)],
             true,
             2,
-            LrbOptimalLemma((ub_limit * 100.0).to_int()),
+            LrbOptimalLemma((ub_limit * lrb_lemma_bound_scale).to_int()),
           )
           let _ = self.certify_clause_origin(c)
           projected.push(c)

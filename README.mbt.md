@@ -100,11 +100,11 @@ graph TD
 
 - **LB4 / LB5 / LB6（SVM 譜範數、EUF 耦合、GNN 校準）係啟發式**：三者都會被夾在 LB1–LB3 構成嘅可靠下界之內，所以 `fused_lower_bound` 永遠唔會超過可靠上確界，剪枝保持 admissible；亦因為咁，實際決定剪枝嘅只有 LB1（LRA 連續鬆弛）、LB2（LIA 整數緊化）同 LB3（QAP 下界），LB4–LB6 只作遙測輸出。
 - **算術理論求解器係區間界限傳播**，唔係 simplex；衝突子句由界限嘅 reason 集合（已做傳遞閉包）同約束 guard 構成。標籤為 `LraFarkasAxiom` 嘅只係「實數界限衝突」分類，程式**冇**構造或驗證顯式 Farkas 證書。
-- **CAC 只對以 `add_constraint` 註冊嘅多項式約束生效**：統一求解器預設冇註冊任何多項式約束，場景 [3] 係用獨立 API 直接驗證理想歸約。`compute_spoly`（Buchberger S-多項式）目前只由白盒測試覆蓋，未參與歸約路徑；歸約假設註冊嘅生成元已構成 Gröbner 基（示範場景嘅 {g1, g2} 已滿足）。
+- **CAC 只對以 `add_constraint` 註冊嘅多項式約束生效**：統一求解器預設冇註冊任何多項式約束（`check_cylindrical_covering` 即時返回 `None`），場景 [3] 係用獨立 API 直接驗證理想歸約；區間證明出嘅衝突子句會帶埋 `lb_reasons`/`ub_reasons` 嘅界限 guard 否定文字。`compute_spoly`（Buchberger S-多項式）目前只由白盒測試覆蓋，未參與歸約路徑；歸約假設註冊嘅生成元已構成 Gröbner 基（示範場景嘅 {g1, g2} 已滿足）。
 - **Dual-Layer CDN 對映 (`map_outer_to_inner`)** 係對外 API，由白盒測試驗證同態律；求解器主搜尋流程只寫入註冊表、冇讀返映射結果，因此唔影響搜尋路徑。
 - **GNN / SVM 係固定權重啟發式**（冇訓練），只影響分支次序、極性預測同被夾住嘅 LB6。
 - **BBF 快照係單進程內嘅求解器狀態副本**（union-find、界限、incumbent）；一致割檢查會驗證森林結構同比界非空，但唔係跨節點嘅分散式算法。
-- **渲染系統**：`RTree::update_primitive_aabb` 係 O(N) 全樹掃描（未維護 primitive→leaf 索引）；`SparseSpatialGrid::coord_to_tile` 會將負座標夾到 tile 0（查詢仍然 sound，只係多咗候選）；局部剔除取 R-tree ∩ 網格結果，屬保守做法；頂點著色器嘅 `Affine2D` transform 目前只由白盒測試驅動，引擎未提供 setter。
+- **渲染系統**：`RTree::update_primitive_aabb` 係 O(N) 全樹掃描（未維護 primitive→leaf 索引）；`SparseSpatialGrid::coord_to_tile` 而家保留 signed tile index（負座標唔會再夾入 tile 0；`morton_encode_2d` 只係將 hash 輸入夾到 0..16383，桶碰撞由 `(tile_x, tile_y)` 精確比對區分，所以查詢仍然 sound）；局部剔除取 R-tree ∩ 網格結果，網格只作 superset 過濾，交集同 R-tree 精確命中一致；頂點著色器嘅 `Affine2D` transform 目前只由白盒測試驅動，引擎未提供 setter。
 
 ---
 

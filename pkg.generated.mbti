@@ -190,7 +190,7 @@ pub(all) struct CylindricalAlgebraicCovering {
 }
 pub fn CylindricalAlgebraicCovering::add_constraint(Self, MultivariatePoly, ArithOp, Double, Int) -> Unit
 pub fn CylindricalAlgebraicCovering::add_ideal_generator(Self, MultivariatePoly) -> Unit
-pub fn CylindricalAlgebraicCovering::check_cylindrical_covering(Self, Array[Double], Array[Double], Array[Double], Int) -> Clause?
+pub fn CylindricalAlgebraicCovering::check_cylindrical_covering(Self, Array[Double], Array[Double], Array[Double], Array[Array[Int]], Array[Array[Int]], Int) -> Clause?
 pub fn CylindricalAlgebraicCovering::new(Int) -> Self
 
 pub(all) struct DirtyRectTracker {
@@ -635,9 +635,7 @@ pub fn SparseSpatialGrid::remove_primitive(Self, Int, Aabb) -> Unit
 pub(all) struct SparseTileCell {
   tile_x : Int
   tile_y : Int
-  morton_key : Int
   primitives : Array[Int]
-  mut dirty : Bool
 }
 
 pub(all) struct StrokeCluster {
