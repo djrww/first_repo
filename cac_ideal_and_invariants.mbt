@@ -367,16 +367,6 @@ pub fn CylindricalAlgebraicCovering::add_constraint(
 }
 
 ///|
-/// Push the negation of bound-guard literal `r` into `lits`, skipping the unconditional
-/// marker 0 and keeping the clause duplicate-free.
-fn push_reason_lit(lits : Array[Int], r : Int) -> Unit {
-  if r == 0 {
-    return
-  }
-  push_unique(lits, lit_neg(r))
-}
-
-///|
 /// Execute Ring-Lifted Cylindrical Algebraic Covering (CAC) ideal reduction over the box
 /// `[var_lb[k], var_ub[k]]`.
 /// Returns `Some(conflict_clause)` only when the violation is *provable* for every point of

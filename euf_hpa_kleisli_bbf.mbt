@@ -279,9 +279,9 @@ pub fn HpaCongruenceClosure::propagate_star_closure(
       // with repeated literals would corrupt LBD bookkeeping and conservation hashing.
       let conflict_lits : Array[Int] = []
       for r in eq_reasons {
-        push_conflict_reason(conflict_lits, r)
+        push_reason_lit(conflict_lits, r)
       }
-      push_conflict_reason(conflict_lits, neq_reason_lit)
+      push_reason_lit(conflict_lits, neq_reason_lit)
       return Some(conflict_lits)
     }
   }

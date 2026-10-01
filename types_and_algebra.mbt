@@ -132,6 +132,17 @@ pub fn push_unique(arr : Array[Int], value : Int) -> Unit {
 }
 
 ///|
+/// Push the negation of guard literal `r` into `lits`, skipping the unconditional marker 0
+/// and keeping the clause duplicate-free. Shared by the LRA bound-conflict builder, the CAC
+/// covering check and the EUF congruence conflicts.
+fn push_reason_lit(lits : Array[Int], r : Int) -> Unit {
+  if r == 0 {
+    return
+  }
+  push_unique(lits, lit_neg(r))
+}
+
+///|
 /// Create a new certified Clause.
 pub fn Clause::new(
   id : Int,

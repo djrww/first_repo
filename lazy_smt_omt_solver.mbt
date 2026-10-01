@@ -152,16 +152,6 @@ pub fn is_lit_false(lit : Int, values : Array[TruthVal]) -> Bool {
 }
 
 ///|
-/// Push the negated literal `-r` into `conflict_lits` if `r != 0`, keeping the clause free
-/// of duplicate literals (delegates the dedup to `push_unique`).
-fn push_conflict_reason(conflict_lits : Array[Int], r : Int) -> Unit {
-  if r == 0 {
-    return
-  }
-  push_unique(conflict_lits, lit_neg(r))
-}
-
-///|
 /// Numeric tolerance used by every arithmetic bound comparison.
 // tol_eps now lives in solver_tunables.mbt as `tol_eps`
 
@@ -297,12 +287,12 @@ fn LraLiaTheorySolver::build_arith_conflict(
   next_clause_id : Int,
 ) -> Clause {
   let lits : Array[Int] = []
-  push_conflict_reason(lits, guard_lit)
+  push_reason_lit(lits, guard_lit)
   for r in self.lb_reasons[v] {
-    push_conflict_reason(lits, r)
+    push_reason_lit(lits, r)
   }
   for r in self.ub_reasons[v] {
-    push_conflict_reason(lits, r)
+    push_reason_lit(lits, r)
   }
   let origin = if integrality {
     self.lia_cuts = self.lia_cuts + 1
