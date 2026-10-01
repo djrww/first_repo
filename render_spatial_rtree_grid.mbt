@@ -62,11 +62,14 @@ fn RTree::recompute_node_aabb(self : RTree, node_id : Int) -> Unit {
     self.nodes[node_id].aabb = Aabb::new(0.0, 0.0, 0.0, 0.0)
     return
   }
-  let mut acc = entries[0].aabb
-  for i = 1; i < entries.length(); i = i + 1 {
-    acc = acc.union(entries[i].aabb)
+  let boxes : Array[Aabb] = []
+  for e in entries {
+    boxes.push(e.aabb)
   }
-  self.nodes[node_id].aabb = acc
+  self.nodes[node_id].aabb = match Aabb::union_all(boxes) {
+    Some(box) => box
+    None => Aabb::new(0.0, 0.0, 0.0, 0.0)
+  }
 }
 
 ///|
