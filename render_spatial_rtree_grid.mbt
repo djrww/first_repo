@@ -76,15 +76,15 @@ fn RTree::choose_leaf(self : RTree, box : Aabb) -> Int {
   while !self.nodes[cur].is_leaf {
     let entries = self.nodes[cur].entries
     let mut best_child = entries[0].child_node_id
-    let mut best_enlargement = 1.0e18
-    let mut best_area = 1.0e18
+    let mut best_enlargement = scan_infinity
+    let mut best_area = scan_infinity
     for e in entries {
       let cur_area = e.aabb.area()
       let enlarged_area = e.aabb.union(box).area()
       let enlargement = enlarged_area - cur_area
-      if enlargement < best_enlargement - 1.0e-9 ||
+      if enlargement < best_enlargement - tol_eps ||
         (
-          (enlargement - best_enlargement).abs() <= 1.0e-9 &&
+          (enlargement - best_enlargement).abs() <= tol_eps &&
           cur_area < best_area
         ) {
         best_enlargement = enlargement
@@ -106,7 +106,7 @@ fn RTree::split_node_quadratic(self : RTree, node_id : Int) -> Int {
   // 1. Pick seeds (i0, j0) maximizing dead-space waste: area(E_i U E_j) - area(E_i) - area(E_j)
   let mut seed_a = 0
   let mut seed_b = if n > 1 { 1 } else { 0 }
-  let mut max_waste = -1.0e18
+  let mut max_waste = -scan_infinity
   for i = 0; i < n; i = i + 1 {
     for j = i + 1; j < n; j = j + 1 {
       let u = all_entries[i].aabb.union(all_entries[j].aabb)
@@ -145,20 +145,38 @@ fn RTree::split_node_quadratic(self : RTree, node_id : Int) -> Int {
     }
   }
 
-  // 2. Distribute remaining entries by minimum area enlargement
+  // 2. Distribute remaining entries by minimum area enlargement.
+  // Guttman's minimum-fill rule: a group must receive every remaining entry once that is
+  // the only way for it to reach ceil(0.4 * M) entries, so neither group is left too small.
+  let min_fill = ((self.max_entries * 2) + 4) / 5
+  let mut count_a = 1
+  let mut count_b = 1
+  let mut remaining = n - 2
   for idx = 0; idx < n; idx = idx + 1 {
     if idx != seed_a && idx != seed_b {
       let e = all_entries[idx]
       let box_a = self.nodes[node_id].aabb
       let box_b = self.nodes[new_node_id].aabb
-      let enl_a = box_a.union(e.aabb).area() - box_a.area()
-      let enl_b = box_b.union(e.aabb).area() - box_b.area()
-      let target_id = if enl_a <= enl_b { node_id } else { new_node_id }
+      let target_id = if count_a + remaining <= min_fill {
+        node_id
+      } else if count_b + remaining <= min_fill {
+        new_node_id
+      } else {
+        let enl_a = box_a.union(e.aabb).area() - box_a.area()
+        let enl_b = box_b.union(e.aabb).area() - box_b.area()
+        if enl_a <= enl_b { node_id } else { new_node_id }
+      }
       self.nodes[target_id].entries.push(e)
       self.nodes[target_id].aabb = self.nodes[target_id].aabb.union(e.aabb)
       if !is_leaf && e.child_node_id >= 0 {
         self.nodes[e.child_node_id].parent_id = target_id
       }
+      if target_id == node_id {
+        count_a = count_a + 1
+      } else {
+        count_b = count_b + 1
+      }
+      remaining = remaining - 1
     }
   }
   new_node_id
@@ -308,7 +326,8 @@ pub fn RTree::query_aabb(self : RTree, query_box : Aabb) -> Array[Int] {
 }
 
 ///|
-/// Interleave the lower 15 bits of `tx` and `ty` into a 30-bit Morton Z-order curve code.
+/// Interleave the lower 14 bits of `tx` and `ty` (each clamped to 0..16383) into a
+/// 28-bit Morton Z-order curve code.
 pub fn morton_encode_2d(tx : Int, ty : Int) -> Int {
   let ux = tx.clamp(min=0, max=16383)
   let uy = ty.clamp(min=0, max=16383)
@@ -540,7 +559,7 @@ fn point_to_segment_distance(p : Vec2, a : Vec2, b : Vec2) -> Double {
   let dx = b.x - a.x
   let dy = b.y - a.y
   let len_sq = dx * dx + dy * dy
-  if len_sq < 1.0e-12 {
+  if len_sq < tol_eps_tight {
     return p.dist(a)
   }
   let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len_sq
@@ -611,20 +630,9 @@ pub fn VectorStroke::from_samples(
     pts.push(sp.pos)
   }
   let simplified = simplify_stroke_rdp(pts, rdp_epsilon)
-  let mut min_x = 1.0e18
-  let mut min_y = 1.0e18
-  let mut max_x = -1.0e18
-  let mut max_y = -1.0e18
-  for p in simplified {
-    min_x = min_x.min(p.x)
-    min_y = min_y.min(p.y)
-    max_x = max_x.max(p.x)
-    max_y = max_y.max(p.y)
-  }
-  let base_aabb = if simplified.length() > 0 {
-    Aabb::new(min_x, min_y, max_x, max_y).inflate(stroke_width * 0.5 + 1.0)
-  } else {
-    Aabb::new(0.0, 0.0, 0.0, 0.0)
+  let base_aabb = match Aabb::from_points(simplified) {
+    Some(box) => box.inflate(stroke_width * 0.5 + 1.0)
+    None => Aabb::new(0.0, 0.0, 0.0, 0.0)
   }
   let mut tx = 1.0
   let mut ty = 0.0
@@ -634,7 +642,7 @@ pub fn VectorStroke::from_samples(
     let dx = last.x - first.x
     let dy = last.y - first.y
     let len = (dx * dx + dy * dy).sqrt()
-    if len > 1.0e-9 {
+    if len > tol_eps {
       tx = dx / len
       ty = dy / len
     }
@@ -784,7 +792,7 @@ pub fn DirtyRectTracker::coalesce_dirty_regions(
         let b = working[j]
         let u = a.union(b)
         let sum_area = a.area() + b.area()
-        if a.intersects(b) || u.area() <= self.coalesce_ratio * sum_area + 16.0 {
+        if a.intersects(b) || u.area() <= self.coalesce_ratio * sum_area + dirty_coalesce_area_slack {
           working[i] = u
           // Remove j by swapping with last element
           let last_idx = working.length() - 1

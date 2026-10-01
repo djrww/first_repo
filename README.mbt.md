@@ -9,14 +9,14 @@
 1. **自研 OMT 內層 + 圖神經網絡 (GNN) 內層 + CDCL(T) 外層嵌入 Lazy SMT 統一求解器**
    - 內層 OMT 聯動 **SVM 再生核希爾伯特空間 (RKHS) 核心函數映射**、**HPA 線性時間全等閉包 (`*Closure`)**、**克萊斯合一圖形 (Kleisli Unification Graph, EUF)** 與 **BBF 分散式快照變換演算法**
    - **內外半幺群雙層 CDN 解耦對映 QAP 指派子句 CNF**
-   - **協同 LRB 混合 6 動態下邊界增量離散剪枝**、**QAP 增量離散剪枝** 與 **深層融合自適應 LRB 增量最優解演算法化引理**
+   - **協同 LRB 混合 6 動態下邊界增量離散剪枝**、**QAP 增量離散剪枝** 與 **增量最優解引理（記錄 incumbent 並加 blocking clause；唔係最小解釋）**
    - **環升態圓柱代數覆蓋 (CAC) 理想歸約**、**Lazy SMT + CDCL(T) 同態守恆理想** 與 **疊加協同窮舉上界歸因子句全射公理不變量約束投影**
    - 完整支援 **Lazy SMT + LRA (線性實數算術) + LIA (線性整數算術) + EUF (未解釋函數等詞)**
 
 2. **高性能向量增量拓撲與細粒度局部光柵渲染系統**
-   - **向量增量拓撲 (DCEL 半邊平面圖)**、**細粒度響應式 (Push-Pull 無閃爍依賴圖)**
+   - **向量增量拓撲 (DCEL 半邊平面圖)**、**細粒度響應式（dirty 標記推送 + 依賴序重算，無閃爍依賴圖）**
    - **動態 R-tree 區域樹**、**Morton Z-Order 稀疏網格**、**筆跡叢集化 (RDP 簡化 + 空間切向親和聚類)**、**髒矩形檢測與面積浪費比合併**
-   - **零拷貝頂點緩衝區 (Zero-Copy VBO/IBO Arena & 原位切片更新)**、**雙線性插值 SDF 有向距離場紋理圖集**、**可編程頂點/片段著色器**
+   - **平面頂點緩衝區 (Flat VBO/IBO Arena：上載時一次轉換入連續浮點陣列，之後原位切片更新)**、**雙線性插值 SDF 有向距離場紋理圖集**、**可編程頂點/片段著色器**
    - **局部剔除 (Local Culling)**、**光柵與局部 Scissor 光柵**、**4x RGSS 旋轉網格超採樣 + SDF 邊緣平滑反鋸齒** 與 **幀間增量渲染管線**
 
 ---
@@ -41,7 +41,7 @@ graph TD
 
     subgraph "Subsystem II: Incremental Vector & Raster Rendering Engine"
         Reactive["細粒度響應式 DAG<br/>Signal / Computed"] --> Topo["向量增量拓撲 (DCEL 半邊圖)<br/>交點自動分裂 & 繞數計算"]
-        Reactive --> VBO["零拷貝頂點緩衝區 Arena<br/>ZeroCopyBufferSlice 原位更新"]
+        Reactive --> VBO["平面頂點緩衝區 Arena<br/>ArenaBufferSlice 原位更新"]
         Strokes["自由筆跡輸入"] --> Cluster["筆跡叢集化引擎<br/>RDP 折線簡化 + 空間聚類"]
         Cluster --> VBO
         VBO --> Spatial["R-tree 區域樹 & Morton 稀疏網格"]
@@ -68,7 +68,7 @@ graph TD
 ├── lazy_smt_omt_solver.mbt          # LRA/LIA 求解器、1-UIP 衝突分析、Lazy SMT + CDCL(T) + OMT 主引擎
 ├── render_topology_reactive.mbt     # 向量增量拓撲 (DCEL 半邊圖、交點分裂) 與細粒度響應式依賴圖
 ├── render_spatial_rtree_grid.mbt    # 動態 Guttman R-tree、Morton 稀疏網格、RDP 筆跡叢集化、髒矩形合併
-├── render_vbo_sdf_shader.mbt        # 零拷貝 VBO/IBO 緩衝區、雙線性 SDF 紋理圖集、可編程頂點/片段著色器
+├── render_vbo_sdf_shader.mbt        # 平面 VBO/IBO 緩衝區、雙線性 SDF 紋理圖集、可編程頂點/片段著色器
 ├── render_rasterizer_pipeline.mbt   # 局部剔除、局部 Scissor 光柵、4x RGSS 反鋸齒、增量渲染主引擎
 ├── omt_cdcl_solver.mbt              # 5 大端到端基準測試與場景編排入口
 ├── omt_cdcl_solver_wbtest.mbt       # 白盒單元測試 (代數同態、HPA/Kleisli、GNN/SVM、LRB/Hybrid6、拓撲/R-tree/VBO)
@@ -84,13 +84,13 @@ graph TD
 
 ### 1. OMT + GNN + CDCL(T) + Lazy SMT 求解器
 - **內外半幺群雙層 CDN 解耦對映 (`DualLayerCDN`)**：外層布爾部分指派幺半群 $(\mathcal{M}_{\text{outer}}, \oplus, e_{\text{outer}})$ 到內層理論狀態半群 $(\mathcal{S}_{\text{inner}}, \otimes)$ 滿足同態律 $\Phi_{\text{CDN}}(\mathbf{a} \oplus \mathbf{b}) = \Phi_{\text{CDN}}(\mathbf{a}) \otimes \Phi_{\text{CDN}}(\mathbf{b})$。
-- **HPA `*Closure` 與克萊斯合一圖形 (`HpaCongruenceClosure`, `KleisliUnificationGraph`)**：支援任意深度未解釋函數嵌套 $a \equiv^* b \implies f(f(a)) \equiv^* f(f(b))$ 的線性時間傳播與證明森林路徑衝突解釋，並在代換單子 Kleisli 範疇 $\mathcal{K}(T)$ 中透過 `occurs_in` 攔截非良基循環合一。
-- **協同 LRB 混合 6 動態下邊界 (`LrbBrancher`, `Hybrid6DynamicLowerBound`)**：融合 $LB_1$（LRA 連續鬆弛）、$LB_2$（LIA 整數緊化）、$LB_3$（QAP Gilmore-Lawler 下界）、$LB_4$（SVM RKHS 譜範數下界）、$LB_5$（EUF 全等耦合下界）、$LB_6$（GNN 校準神經下界）進行增量離散剪枝。
-- **環升態 CAC 理想歸約與同態守恆理想 (`CylindricalAlgebraicCovering`, `HomomorphicConservationIdeal`, `SurjectiveAxiomProjector`)**：在 $\mathbb{Q}[x_1,\dots,x_n]$（GrLex 序）上計算 Buchberger S-多項式與多元理想除法歸約，驗證歸結步在布爾商環理想中的同態守恆性，並校驗 9 類公理來源的全射覆蓋。
+- **HPA `*Closure` 與克萊斯合一圖形 (`HpaCongruenceClosure`, `KleisliUnificationGraph`)**：支援任意深度未解釋函數嵌套 $a \equiv^* b \implies f(f(a)) \equiv^* f(f(b))$ 的線性時間傳播與證明森林路徑追蹤（`explain_congruence_reasons` 回傳 sound 超集，非最小解釋），並在代換單子 Kleisli 範疇 $\mathcal{K}(T)$ 中透過 `occurs_in` 攔截非良基循環合一。
+- **協同 LRB 混合 6 動態下邊界 (`LrbBrancher`, `Hybrid6DynamicLowerBound`)**：融合 $LB_1$（LRA 連續鬆弛）、$LB_2$（LIA 整數緊化）、$LB_3$（QAP Gilmore-Lawler 下界）、$LB_4$（SVM RKHS 譜範數下界）、$LB_5$（EUF 全等耦合下界）、$LB_6$（GNN 校準神經下界）進行增量離散剪枝。$LB_4$–$LB_6$ 係校準啟發式，只會將融合下界收緊到唔超過 $LB_1$–$LB_3$ 嘅合理下界；真正決定剪枝嘅係後三者。
+- **環升態 CAC 理想歸約與同態守恆理想 (`CylindricalAlgebraicCovering`, `HomomorphicConservationIdeal`, `SurjectiveAxiomProjector`)**：在 $\mathbb{Q}[x_1,\dots,x_n]$（GrLex 序）上計算 Buchberger S-多項式與多元理想除法歸約，驗證歸結步在布爾商環理想中的同態守恆性，並校驗 9 類公理來源的全射覆蓋；認證失敗次數同各類覆蓋率會經 CLI 報告輸出（正常失敗次數為 0）。
 
 ### 2. 向量增量拓撲與增量光柵渲染系統
 - **向量增量拓撲 (`VectorTopologyGraph`)**：插入新線段時自動檢測與既有活躍半邊的內部交點，原位分裂半邊對 (`split_edge_incremental`) 並維護平面圖繞數與歐拉示性數。
-- **細粒度響應式與零拷貝 VBO (`FineGrainedReactiveGraph`, `ZeroCopyVertexArena`)**：單一圖元平移信號觸發時，直接對 `ZeroCopyBufferSlice` 對應的連續浮點陣列區間執行原位更新 (`translate_slice_in_place`)，零陣列拷貝。
+- **細粒度響應式與平面 VBO (`FineGrainedReactiveGraph`, `FlatVertexArena`)**：單一圖元平移信號觸發時，直接對 `ArenaBufferSlice` 對應的連續浮點陣列區間執行原位更新 (`translate_slice_in_place`)，唔需要重新上載或者重新分配切片。
 - **R-tree + Morton 稀疏網格局部剔除與局部 Scissor 光柵 (`IncrementalRenderEngine`)**：合併新舊包圍盒為緊湊髒矩形後，求取 R-tree 與稀疏網格查詢交集以剔除髒區外圖元，並僅在髒矩形 Scissor 視窗內執行 **4x RGSS 旋轉網格超採樣 + SDF 雙線性平滑反鋸齒** 光柵化。
 
 ---
@@ -161,10 +161,19 @@ Total tests: 13, passed: 13, failed: 0.
     - Frame 2 Dirty Area Ratio       : 0.0396728515625
     - Frame 2 Drawn vs. Local Culled : 3 drawn / 5 locally culled
     - Frame 2 Local Pixels Shaded    : 554 px (4x RGSS Subsamples: 11356)
-    - Zero-Copy VBO In-Place Patches : 1
+    - VBO In-Place Buffer Patches    : 1
     - SDF Bilinear Texture Samples   : 840
 ================================================================================
 ```
+
+---
+
+## 輸出節錄
+
+上面嘅 console block 係 `moon run cmd/main` 輸出嘅節錄（並非逐行完整貼上）。實際上每個場景仲會
+印出 **公理認證失敗次數**（`Axiom Certification Failures`，正常為 0）同 **9 類公理來源覆蓋率**
+（`Axiom Schema Coverage: n / 9 categories`）；呢兩個數字係 `SurjectiveAxiomProjector` 嘅
+`schema_coverage_report()` 讀數，唔再係寫入後無人讀取嘅計數器。
 
 ---
 

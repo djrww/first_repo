@@ -160,16 +160,9 @@ fn push_conflict_reason(conflict_lits : Array[Int], r : Int) -> Unit {
 
 ///|
 /// Numeric tolerance used by every arithmetic bound comparison.
-let arith_eps : Double = 1.0e-9
+// tol_eps now lives in solver_tunables.mbt as `tol_eps`
 
-///|
-/// Upper bound on LRA/LIA bound-propagation rounds (fixpoint guard; each round is a
-/// full pass over the active guarded constraints).
-let arith_propagation_round_limit : Int = 512
 
-///|
-/// Upper bound on arithmetic witness repair / objective-improvement rounds.
-let arith_witness_round_limit : Int = 64
 
 ///|
 /// Round a `Double` to the nearest integer value, with halves going away from zero.
@@ -182,7 +175,7 @@ fn round_half_away(x : Double) -> Double {
 }
 
 ///|
-/// Check whether the linear constraint `term op rhs` holds exactly (up to `arith_eps`).
+/// Check whether the linear constraint `term op rhs` holds exactly (up to `tol_eps`).
 fn arith_constraint_satisfied(
   term : LinearTerm,
   op : ArithOp,
@@ -191,11 +184,11 @@ fn arith_constraint_satisfied(
 ) -> Bool {
   let v = term.eval(point)
   match op {
-    Le => v <= rhs + arith_eps
-    Ge => v >= rhs - arith_eps
-    Lt => v <= rhs - arith_eps
-    Gt => v >= rhs + arith_eps
-    Eq => (v - rhs).abs() <= arith_eps
+    Le => v <= rhs + tol_eps
+    Ge => v >= rhs - tol_eps
+    Lt => v <= rhs - tol_eps
+    Gt => v >= rhs + tol_eps
+    Eq => (v - rhs).abs() <= tol_eps
   }
 }
 
@@ -211,8 +204,8 @@ fn arith_constraint_violation(
   match op {
     Le => (v - rhs).max(0.0)
     Ge => (rhs - v).max(0.0)
-    Lt => (v - rhs + arith_eps).max(0.0)
-    Gt => (rhs - v + arith_eps).max(0.0)
+    Lt => (v - rhs + tol_eps).max(0.0)
+    Gt => (rhs - v + tol_eps).max(0.0)
     Eq => (v - rhs).abs()
   }
 }
@@ -226,12 +219,12 @@ fn LraLiaTheorySolver::tighten_lower(
   bound : Double,
   reason : Int,
 ) -> Int {
-  if bound <= self.cur_lb[v] + arith_eps {
+  if bound <= self.cur_lb[v] + tol_eps {
     return 0
   }
   self.cur_lb[v] = bound
   self.lb_reason[v] = reason
-  if self.cur_lb[v] > self.cur_ub[v] + arith_eps {
+  if self.cur_lb[v] > self.cur_ub[v] + tol_eps {
     return 2
   }
   1
@@ -246,12 +239,12 @@ fn LraLiaTheorySolver::tighten_upper(
   bound : Double,
   reason : Int,
 ) -> Int {
-  if bound >= self.cur_ub[v] - arith_eps {
+  if bound >= self.cur_ub[v] - tol_eps {
     return 0
   }
   self.cur_ub[v] = bound
   self.ub_reason[v] = reason
-  if self.cur_lb[v] > self.cur_ub[v] + arith_eps {
+  if self.cur_lb[v] > self.cur_ub[v] + tol_eps {
     return 2
   }
   1
@@ -269,15 +262,15 @@ fn LraLiaTheorySolver::apply_integrality(
   }
   let int_lb = self.cur_lb[v].ceil()
   let int_ub = self.cur_ub[v].floor()
-  if int_lb > int_ub + arith_eps {
+  if int_lb > int_ub + tol_eps {
     return 2
   }
   let mut changed = 0
-  if int_lb > self.cur_lb[v] + arith_eps {
+  if int_lb > self.cur_lb[v] + tol_eps {
     self.cur_lb[v] = int_lb
     changed = 1
   }
-  if int_ub < self.cur_ub[v] - arith_eps {
+  if int_ub < self.cur_ub[v] - tol_eps {
     self.cur_ub[v] = int_ub
     changed = 1
   }
@@ -317,12 +310,12 @@ pub fn LraLiaTheorySolver::is_witness_certified(
   values : Array[TruthVal],
 ) -> Bool {
   for v = 0; v < self.num_arith_vars; v = v + 1 {
-    if self.witness[v] < self.cur_lb[v] - arith_eps ||
-      self.witness[v] > self.cur_ub[v] + arith_eps {
+    if self.witness[v] < self.cur_lb[v] - tol_eps ||
+      self.witness[v] > self.cur_ub[v] + tol_eps {
       return false
     }
     if self.is_integer[v] &&
-      (self.witness[v] - round_half_away(self.witness[v])).abs() > arith_eps {
+      (self.witness[v] - round_half_away(self.witness[v])).abs() > tol_eps {
       return false
     }
   }
@@ -377,7 +370,7 @@ fn LraLiaTheorySolver::compute_certified_witness(
   let mut round = 0
   while round < arith_witness_round_limit {
     round = round + 1
-    let mut worst_violation = arith_eps
+    let mut worst_violation = tol_eps
     let mut worst_idx = -1
     let mut idx = 0
     for c in self.constraints {
@@ -412,7 +405,7 @@ fn LraLiaTheorySolver::compute_certified_witness(
     let mut best_target = 0.0
     for pair in c.term.coeffs {
       let (j, a) = pair
-      if j < 0 || j >= self.num_arith_vars || a.abs() <= arith_eps {
+      if j < 0 || j >= self.num_arith_vars || a.abs() <= tol_eps {
         continue
       }
       let target = (self.witness[j] + needed / a).clamp(
@@ -425,7 +418,7 @@ fn LraLiaTheorySolver::compute_certified_witness(
         target
       }
       let clamped = snapped.clamp(min=self.cur_lb[j], max=self.cur_ub[j])
-      if (clamped - self.witness[j]).abs() > arith_eps &&
+      if (clamped - self.witness[j]).abs() > tol_eps &&
         a.abs() > best_abs_coeff {
         best_abs_coeff = a.abs()
         best_j = j
@@ -452,7 +445,7 @@ fn LraLiaTheorySolver::compute_certified_witness(
       }
       let target = if w >= 0.0 { self.cur_lb[v] } else { self.cur_ub[v] }
       let start = self.witness[v]
-      if (target - start).abs() <= arith_eps {
+      if (target - start).abs() <= tol_eps {
         continue
       }
       if self.try_witness_value(values, v, target) {
@@ -466,7 +459,7 @@ fn LraLiaTheorySolver::compute_certified_witness(
         let mid = 0.5 * (lo + hi)
         let snapped = if self.is_integer[v] { round_half_away(mid) } else { mid }
         let clamped = snapped.clamp(min=self.cur_lb[v], max=self.cur_ub[v])
-        if (clamped - start).abs() <= arith_eps {
+        if (clamped - start).abs() <= tol_eps {
           break
         } else if self.try_witness_value(values, v, clamped) {
           lo = clamped
@@ -520,7 +513,7 @@ pub fn LraLiaTheorySolver::propagate_and_check(
       let rhs = c.rhs - c.term.constant
       for pair in c.term.coeffs {
         let (vj, aj) = pair
-        if vj < 0 || vj >= self.num_arith_vars || aj.abs() <= arith_eps {
+        if vj < 0 || vj >= self.num_arith_vars || aj.abs() <= tol_eps {
           continue
         }
         // Interval bounds of the remaining terms of this constraint
@@ -543,7 +536,7 @@ pub fn LraLiaTheorySolver::propagate_and_check(
         if c.op == Le || c.op == Lt || c.op == Eq {
           let mut upper = rhs - min_rest
           if c.op == Lt {
-            upper = upper - arith_eps
+            upper = upper - tol_eps
           }
           let status = if aj > 0.0 {
             self.tighten_upper(vj, upper / aj, c.guard_lit)
@@ -565,7 +558,7 @@ pub fn LraLiaTheorySolver::propagate_and_check(
         if c.op == Ge || c.op == Gt || c.op == Eq {
           let mut lower = rhs - max_rest
           if c.op == Gt {
-            lower = lower + arith_eps
+            lower = lower + tol_eps
           }
           let status = if aj > 0.0 {
             self.tighten_lower(vj, lower / aj, c.guard_lit)
@@ -627,6 +620,11 @@ pub(all) struct OmtSolveResult {
   cac_ideal_reductions : Int
   conservation_ideal_verified : Bool
   surjective_axiom_certified_clauses : Int
+  /// Clauses that failed origin/hash certification. Non-zero means the surjective-axiom
+  /// claim does not hold for this run.
+  axiom_certification_failures : Int
+  /// Certified-clause count per `AxiomOrigin` category (9 categories, declaration order).
+  axiom_schema_coverage : Array[Int]
 }
 
 ///|
@@ -659,6 +657,9 @@ pub(all) struct LazySmtOmtSolver {
   /// Number of complete Boolean models rejected because the arithmetic witness could not
   /// be certified against the guarded arithmetic constraints.
   mut uncertified_witness_rejections : Int
+  /// Number of clauses whose origin/hash certification failed (must stay 0 for the
+  /// surjective-axiom claim to hold).
+  mut axiom_certification_failures : Int
   opt_lemma_engine : AdaptiveOptimalLemmaEngine
   cac : CylindricalAlgebraicCovering
   conservation_ideal : HomomorphicConservationIdeal
@@ -706,6 +707,7 @@ pub fn LazySmtOmtSolver::new(
     qap,
     learnt_invariant_failures: 0,
     uncertified_witness_rejections: 0,
+      axiom_certification_failures: 0,
     opt_lemma_engine: AdaptiveOptimalLemmaEngine::new(num_vars),
     cac: CylindricalAlgebraicCovering::new(num_arith_vars),
     conservation_ideal: HomomorphicConservationIdeal::new(num_vars),
@@ -746,7 +748,11 @@ pub fn LazySmtOmtSolver::add_clause_with_lbd(
 ) -> Int {
   let id = self.clauses.length()
   let c = Clause::new(id, lits, learnt, lbd.max(1), origin)
-  let _ = self.axiom_projector.certify_clause_origin(c)
+  // Hash/origin certification is a real check: a clause that fails it is still added (it is
+  // soundly derivable), but the failure is counted so the surjectivity claim stays honest.
+  if !self.axiom_projector.certify_clause_origin(c) {
+    self.axiom_certification_failures = self.axiom_certification_failures + 1
+  }
   self.clauses.push(c)
   id
 }
@@ -1182,8 +1188,10 @@ fn LazySmtOmtSolver::handle_conflict(
   self : LazySmtOmtSolver,
   conflict_clause : Clause,
 ) -> Bool {
-  // Certify conflict clause origin if not yet certified
-  let _ = self.axiom_projector.certify_clause_origin(conflict_clause)
+  // Certify the conflict clause origin; count failures instead of discarding the result.
+  if !self.axiom_projector.certify_clause_origin(conflict_clause) {
+    self.axiom_certification_failures = self.axiom_certification_failures + 1
+  }
   if self.decision_level() == 0 {
     return false
   }
@@ -1262,7 +1270,8 @@ pub fn LazySmtOmtSolver::solve_omt(
 
   let mut search_active = true
   let mut steps = 0
-  let max_steps = max_conflicts * 10 + 500
+  let max_steps = max_conflicts * arith_step_budget_per_conflict +
+    arith_step_budget_base
   while search_active &&
         self.lrb.total_conflicts < max_conflicts &&
         steps < max_steps {
@@ -1422,7 +1431,7 @@ pub fn LazySmtOmtSolver::solve_omt(
     optimal_objective: if sat {
       self.opt_lemma_engine.best_objective
     } else {
-      1.0e15
+      arith_infinity
     },
     best_bool_model: self.opt_lemma_engine.best_assignment.copy(),
     best_arith_model: self.opt_lemma_engine.best_arith_assignment.copy(),
@@ -1436,6 +1445,8 @@ pub fn LazySmtOmtSolver::solve_omt(
     bbf_restorations: self.bbf.total_restorations,
     cac_ideal_reductions: self.cac.ideal_reductions_count,
     conservation_ideal_verified: conserved,
-    surjective_axiom_certified_clauses: self.axiom_projector.total_certified_clauses,
+    surjective_axiom_certified_clauses: self.axiom_projector.certified_clause_count(),
+    axiom_certification_failures: self.axiom_certification_failures,
+    axiom_schema_coverage: self.axiom_projector.schema_coverage_report(),
   }
 }

@@ -133,7 +133,7 @@ pub fn LrbBrancher::select_branch_literal(
   svm : SvmKernelMapper,
 ) -> Int? {
   let mut best_var = -1
-  let mut best_score = -1.0e18
+  let mut best_score = -scan_infinity
   for v = 1; v <= self.num_vars; v = v + 1 {
     let is_unassigned = if v < assigned_vals.length() {
       assigned_vals[v] == Unassigned
@@ -325,7 +325,7 @@ pub fn Hybrid6DynamicLowerBound::should_prune(
   self : Hybrid6DynamicLowerBound,
   incumbent_ub : Double,
 ) -> Bool {
-  if self.fused_lower_bound >= incumbent_ub - 1.0e-9 {
+  if self.fused_lower_bound >= incumbent_ub - tol_eps {
     self.prune_triggered_count = self.prune_triggered_count + 1
     true
   } else {
@@ -368,6 +368,26 @@ pub fn QapIncrementalPruner::var_of(
 }
 
 ///|
+/// The `(facility, location, variable)` triples whose QAP Boolean variable is currently
+/// assigned `True`. Location extraction, feasibility checking and the blocking clause all
+/// need exactly this walk over the n x n variable matrix, so it lives in one place.
+fn QapIncrementalPruner::assigned_true_vars(
+  self : QapIncrementalPruner,
+  assigned_vals : Array[TruthVal],
+) -> Array[(Int, Int, Int)] {
+  let out : Array[(Int, Int, Int)] = []
+  for i = 0; i < self.n; i = i + 1 {
+    for k = 0; k < self.n; k = k + 1 {
+      let v = self.var_of(i, k)
+      if v < assigned_vals.length() && assigned_vals[v] == True {
+        out.push((i, k, v))
+      }
+    }
+  }
+  out
+}
+
+///|
 /// Compute the incremental Gilmore-Lawler style discrete lower bound under the
 /// current partial Boolean assignment `assigned_vals`.
 pub fn QapIncrementalPruner::compute_incremental_lower_bound(
@@ -380,14 +400,10 @@ pub fn QapIncrementalPruner::compute_incremental_lower_bound(
   }
   let assigned_loc = Array::make(n, -1)
   let loc_used = Array::make(n, false)
-  for i = 0; i < n; i = i + 1 {
-    for k = 0; k < n; k = k + 1 {
-      let v = self.var_of(i, k)
-      if v < assigned_vals.length() && assigned_vals[v] == True {
-        assigned_loc[i] = k
-        loc_used[k] = true
-      }
-    }
+  for triple in self.assigned_true_vars(assigned_vals) {
+    let (i, k, _v) = triple
+    assigned_loc[i] = k
+    loc_used[k] = true
   }
 
   let mut committed_cost = 0.0
@@ -410,7 +426,7 @@ pub fn QapIncrementalPruner::compute_incremental_lower_bound(
   let mut completion_lb = 0.0
   for i = 0; i < n; i = i + 1 {
     if assigned_loc[i] == -1 {
-      let mut best_for_i = 1.0e15
+      let mut best_for_i = arith_infinity
       let mut any_feasible_k = false
       for k = 0; k < n; k = k + 1 {
         let v = self.var_of(i, k)
@@ -429,7 +445,7 @@ pub fn QapIncrementalPruner::compute_incremental_lower_bound(
                 self.flow[j][i] * self.dist[kj][k]
             } else if j != i {
               // Lower bound on interaction with unassigned facility j
-              let mut min_dist_kl = 1.0e15
+              let mut min_dist_kl = arith_infinity
               for l = 0; l < n; l = l + 1 {
                 if l != k && !loc_used[l] {
                   if self.dist[k][l] < min_dist_kl {
@@ -451,7 +467,7 @@ pub fn QapIncrementalPruner::compute_incremental_lower_bound(
         completion_lb = completion_lb + best_for_i
       } else {
         // No feasible location left for facility i -> infeasible partial assignment!
-        return 1.0e15
+        return arith_infinity
       }
     }
   }
@@ -470,22 +486,20 @@ pub fn QapIncrementalPruner::evaluate_complete_assignment(
   }
   let perm = Array::make(n, -1)
   let used = Array::make(n, false)
-  for i = 0; i < n; i = i + 1 {
-    let mut count_i = 0
-    for k = 0; k < n; k = k + 1 {
-      let v = self.var_of(i, k)
-      if v < assigned_vals.length() && assigned_vals[v] == True {
-        // Two facilities on the same location is not a permutation: reject it here instead
-        // of relying on the injected assignment CNF to rule it out.
-        if used[k] {
-          return None
-        }
-        perm[i] = k
-        used[k] = true
-        count_i = count_i + 1
-      }
+  let count_per_facility = Array::make(n, 0)
+  for triple in self.assigned_true_vars(assigned_vals) {
+    let (i, k, _v) = triple
+    // Two facilities on the same location is not a permutation: reject it here instead
+    // of relying on the injected assignment CNF to rule it out.
+    if used[k] {
+      return None
     }
-    if count_i != 1 {
+    perm[i] = k
+    used[k] = true
+    count_per_facility[i] = count_per_facility[i] + 1
+  }
+  for i = 0; i < n; i = i + 1 {
+    if count_per_facility[i] != 1 {
       return None
     }
   }
@@ -519,17 +533,13 @@ pub fn QapIncrementalPruner::try_generate_pruning_clause(
     return None
   }
   let lb = self.compute_incremental_lower_bound(assigned_vals)
-  if lb < incumbent_ub - 1.0e-9 {
+  if lb < incumbent_ub - tol_eps {
     return None
   }
   let blocking_lits : Array[Int] = []
-  for i = 0; i < self.n; i = i + 1 {
-    for k = 0; k < self.n; k = k + 1 {
-      let v = self.var_of(i, k)
-      if v < assigned_vals.length() && assigned_vals[v] == True {
-        blocking_lits.push(mk_lit(v, false))
-      }
-    }
+  for triple in self.assigned_true_vars(assigned_vals) {
+    let (_i, _k, v) = triple
+    blocking_lits.push(mk_lit(v, false))
   }
   if blocking_lits.length() == 0 {
     return None
@@ -547,8 +557,11 @@ pub fn QapIncrementalPruner::try_generate_pruning_clause(
 }
 
 ///|
-/// Deep-Fusion Adaptive LRB Incremental Optimal Solution Lemma Engine
-/// (深層融合自適應算法LRB增量最優解演算法化引理).
+/// Incumbent-tracking lemma engine (最優解引理引擎).
+/// Records the best objective found so far and emits a blocking clause over the incumbent
+/// assignment: either the positive-cost literals alone when they already explain the bound,
+/// or the full assignment block. The clause is a valid no-better-solution lemma; it is not a
+/// minimal explanation and does not do any LRB-specific reasoning beyond phase saving.
 pub(all) struct AdaptiveOptimalLemmaEngine {
   mut best_objective : Double
   mut has_incumbent : Bool
@@ -563,7 +576,7 @@ pub fn AdaptiveOptimalLemmaEngine::new(
   num_vars : Int,
 ) -> AdaptiveOptimalLemmaEngine {
   {
-    best_objective: 1.0e15,
+    best_objective: arith_infinity,
     has_incumbent: false,
     best_assignment: Array::make(num_vars + 1, Unassigned),
     best_arith_assignment: [],
@@ -572,8 +585,8 @@ pub fn AdaptiveOptimalLemmaEngine::new(
 }
 
 ///|
-/// Record a new improving incumbent solution `obj_val` and synthesize an
-/// LRB-guided Incremental Optimal Solution Lemma blocking assignments with objective >= obj_val.
+/// Record an improving incumbent `obj_val` and synthesize the blocking clause described on
+/// the struct: any re-derivation of this assignment cannot improve the objective.
 pub fn AdaptiveOptimalLemmaEngine::record_incumbent_and_synthesize_lemma(
   self : AdaptiveOptimalLemmaEngine,
   assigned_vals : Array[TruthVal],
@@ -583,7 +596,7 @@ pub fn AdaptiveOptimalLemmaEngine::record_incumbent_and_synthesize_lemma(
   lrb : LrbBrancher,
   next_clause_id : Int,
 ) -> Clause? {
-  if obj_val >= self.best_objective - 1.0e-9 {
+  if obj_val >= self.best_objective - tol_eps {
     return None
   }
   self.best_objective = obj_val
@@ -623,7 +636,7 @@ pub fn AdaptiveOptimalLemmaEngine::record_incumbent_and_synthesize_lemma(
   let lemma_lits : Array[Int] = if !has_neg_weight &&
     arith_witness.length() == 0 &&
     pos_lits.length() > 0 &&
-    pos_sum >= obj_val - 1.0e-9 {
+    pos_sum >= obj_val - tol_eps {
     pos_lits
   } else {
     let full_block : Array[Int] = []

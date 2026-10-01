@@ -18,10 +18,6 @@ pub(all) struct MultivariatePoly {
   terms : Array[PolyMonomial]
 }
 
-///|
-/// Sole dependency of the GrLex monomial order, which makes polynomial ideal reduction
-/// terminate; this limit exists only as a defensive guard against malformed input.
-let poly_reduction_step_limit : Int = 1000000
 
 ///|
 /// Integer power of `x` for `exponent >= 0`.
@@ -64,8 +60,8 @@ fn interval_eval_poly(
       if e <= 0 {
         continue
       }
-      let mut lb = if i < box_lb.length() { box_lb[i] } else { -1.0e12 }
-      let mut ub = if i < box_ub.length() { box_ub[i] } else { 1.0e12 }
+      let mut lb = if i < box_lb.length() { box_lb[i] } else { -arith_initial_bound }
+      let mut ub = if i < box_ub.length() { box_ub[i] } else { arith_initial_bound }
       if lb > ub {
         let tmp = lb
         lb = ub
@@ -108,7 +104,7 @@ fn eval_arith_op(v : Double, op : ArithOp, rhs : Double) -> Bool {
   match op {
     Le => v <= rhs + 1.0e-7
     Ge => v >= rhs - 1.0e-7
-    Eq => (v - rhs).abs() <= 1.0e-7
+    Eq => (v - rhs).abs() <= poly_nonzero_tol
     Lt => v < rhs - 1.0e-7
     Gt => v > rhs + 1.0e-7
   }
@@ -396,9 +392,9 @@ pub fn CylindricalAlgebraicCovering::check_cylindrical_covering(
   let box_lb : Array[Double] = []
   let box_ub : Array[Double] = []
   for k = 0; k < self.num_arith_vars; k = k + 1 {
-    let lb_k = if k < var_lb.length() { var_lb[k] } else { -1.0e12 }
-    let ub_k = if k < var_ub.length() { var_ub[k] } else { 1.0e12 }
-    if lb_k > ub_k + 1.0e-9 {
+    let lb_k = if k < var_lb.length() { var_lb[k] } else { -arith_initial_bound }
+    let ub_k = if k < var_ub.length() { var_ub[k] } else { arith_initial_bound }
+    if lb_k > ub_k + tol_eps {
       return None
     }
     box_lb.push(lb_k)
@@ -418,7 +414,7 @@ pub fn CylindricalAlgebraicCovering::check_cylindrical_covering(
         Lt => min_val > rhs - 1.0e-7
         Ge => max_val < rhs - 1.0e-7
         Gt => max_val < rhs + 1.0e-7
-        Eq => min_val > rhs + 1.0e-7 || max_val < rhs - 1.0e-7
+        Eq => min_val > rhs + poly_nonzero_tol || max_val < rhs - poly_nonzero_tol
       }
     }
     if proven_violation {
@@ -529,8 +525,8 @@ pub fn HomomorphicConservationIdeal::verify_resolution_conservation(
     let p2 = self.eval_clause_ideal_polynomial(c2, assign)
     let pres = self.eval_clause_ideal_polynomial(resolvent, assign)
     // If both c1 and c2 vanish in the ideal (satisfied), resolvent must also vanish!
-    if p1.abs() < 1.0e-9 && p2.abs() < 1.0e-9 {
-      if pres.abs() > 1.0e-9 {
+    if p1.abs() < tol_eps && p2.abs() < tol_eps {
+      if pres.abs() > tol_eps {
         return false
       }
     }
@@ -567,7 +563,7 @@ pub fn HomomorphicConservationIdeal::verify_all_clauses_conserved(
 ) -> Bool {
   for c in clauses {
     let val = self.eval_clause_ideal_polynomial(c, model)
-    if val.abs() > 1.0e-6 {
+    if val.abs() > poly_nonzero_tol {
       return false
     }
     self.verified_clauses = self.verified_clauses + 1
@@ -621,6 +617,24 @@ pub fn SurjectiveAxiomProjector::certify_clause_origin(
 }
 
 ///|
+/// Certified-clause count per `AxiomOrigin` category, in declaration order
+/// (`ProblemInput` first, `LrbOptimalLemma` last). This is the read side of the coverage
+/// array; without it the counters were accumulated but never observable.
+pub fn SurjectiveAxiomProjector::schema_coverage_report(
+  self : SurjectiveAxiomProjector,
+) -> Array[Int] {
+  self.schema_coverage.copy()
+}
+
+///|
+/// Total number of clauses that passed origin + conservation-hash certification.
+pub fn SurjectiveAxiomProjector::certified_clause_count(
+  self : SurjectiveAxiomProjector,
+) -> Int {
+  self.total_certified_clauses
+}
+
+///|
 /// Perform Superposed Cooperative Exhaustive Upper-Bound Resolution Constraint Projection:
 /// Given a linear objective `bool_obj_weights`, an upper bound `ub_limit`, and current clauses,
 /// projects minimal forbidden positive-cost variable pairs/triples whose combined cost exceeds `ub_limit`,
@@ -636,7 +650,7 @@ pub fn SurjectiveAxiomProjector::project_upper_bound_clauses(
   let n = bool_obj_weights.length() - 1
   // 1. Single variables exceeding ub_limit
   for v = 1; v <= n; v = v + 1 {
-    if bool_obj_weights[v] >= ub_limit - 1.0e-9 {
+    if bool_obj_weights[v] >= ub_limit - tol_eps {
       let c = Clause::new(
         cid,
         [mk_lit(v, false)],
@@ -653,10 +667,10 @@ pub fn SurjectiveAxiomProjector::project_upper_bound_clauses(
   // 2. Superposed pairwise exhaustive upper-bound projection: w_u + w_v >= ub_limit
   for u = 1; u <= n; u = u + 1 {
     let wu = bool_obj_weights[u]
-    if wu > 0.0 && wu < ub_limit - 1.0e-9 {
+    if wu > 0.0 && wu < ub_limit - tol_eps {
       for v = u + 1; v <= n; v = v + 1 {
         let wv = bool_obj_weights[v]
-        if wv > 0.0 && wv < ub_limit - 1.0e-9 && wu + wv >= ub_limit - 1.0e-9 {
+        if wv > 0.0 && wv < ub_limit - tol_eps && wu + wv >= ub_limit - tol_eps {
           let c = Clause::new(
             cid,
             [mk_lit(u, false), mk_lit(v, false)],

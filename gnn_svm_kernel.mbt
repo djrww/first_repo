@@ -26,10 +26,6 @@ pub(all) struct SvmKernelMapper {
 }
 
 ///|
-/// Default cap on the support-vector bank, bounding the online-learning overhead per conflict.
-let default_support_vector_capacity : Int = 32
-
-///|
 /// Create a new SVM Kernel Mapper.
 pub fn SvmKernelMapper::new(
   kernel : SvmKernelKind,
@@ -167,7 +163,7 @@ pub fn SvmKernelMapper::rkhs_spectral_margin_norm(
 
 ///|
 /// OMT Graph Neural Network (OMT 圖神經網絡) over the tripartite Clause-Variable-EUF Graph.
-/// Embedding dimension d = 6 per variable and per clause.
+/// Embedding dimension `gnn_embed_dim` per variable and per clause.
 pub(all) struct OmtGnn {
   num_vars : Int
   embed_dim : Int
@@ -185,7 +181,7 @@ pub fn OmtGnn::new(
   clauses : Array[Clause],
   obj_weights : Array[Double],
 ) -> OmtGnn {
-  let d = 6
+  let d = gnn_embed_dim
   let var_embeddings : Array[Array[Double]] = []
   for _i = 0; _i <= num_vars; _i = _i + 1 {
     var_embeddings.push(Array::make(d, 0.0))
@@ -346,7 +342,7 @@ pub fn OmtGnn::predict_branch_score(
     0.45 * emb[4] +
     0.65 * emb[5]
   let svm_margin = svm.decision_function(emb, emb[3] > 0.5)
-  let combined = gnn_logit + 0.25 * svm_margin.abs()
+  let combined = gnn_logit + gnn_svm_mix * svm_margin.abs()
   1.0 / (1.0 + @math.exp(-combined))
 }
 

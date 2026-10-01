@@ -192,11 +192,11 @@ pub fn Framebuffer::rasterize_triangle_local_aa(
 }
 
 ///|
-/// Rasterize a `ZeroCopyBufferSlice` directly from `arena` within `scissor_rect`.
-pub fn Framebuffer::rasterize_slice_zero_copy_local(
+/// Rasterize a `ArenaBufferSlice` directly from `arena` within `scissor_rect`.
+pub fn Framebuffer::rasterize_slice_local(
   self : Framebuffer,
-  arena : ZeroCopyVertexArena,
-  slice : ZeroCopyBufferSlice,
+  arena : FlatVertexArena,
+  slice : ArenaBufferSlice,
   transform : Affine2D,
   shader : FragmentShaderProgram,
   sdf_atlas : SdfTextureAtlas,
@@ -224,7 +224,7 @@ pub fn Framebuffer::rasterize_slice_zero_copy_local(
 /// Scene Primitive registered in the Incremental Rendering Engine.
 pub(all) struct RenderPrimitive {
   id : Int
-  mut slice : ZeroCopyBufferSlice
+  mut slice : ArenaBufferSlice
   mut aabb : Aabb
   shader : FragmentShaderProgram
   mut transform : Affine2D
@@ -246,7 +246,7 @@ pub(all) struct FrameRenderMetrics {
   primitives_locally_culled : Int
   pixels_shaded_in_frame : Int
   subsamples_evaluated_in_frame : Int
-  zero_copy_in_place_updates : Int
+  in_place_buffer_updates : Int
   active_sparse_tiles : Int
   stroke_clusters_count : Int
   topology_vertices : Int
@@ -256,7 +256,7 @@ pub(all) struct FrameRenderMetrics {
 ///|
 /// Unified Incremental Vector & Raster Rendering System (增量渲染引擎):
 /// Combines Vector Incremental Topology, Fine-Grained Reactivity, R-Tree, Sparse Grid,
-/// Stroke Clustering, Dirty Rectangle Coalescing, Zero-Copy VBO/IBO Arena, SDF Texture Atlas,
+/// Stroke Clustering, Dirty Rectangle Coalescing, Flat VBO/IBO Arena, SDF Texture Atlas,
 /// Programmable Shaders, Local Culling, and 4x RGSS Anti-Aliased Local Rasterization.
 pub(all) struct IncrementalRenderEngine {
   width : Int
@@ -267,7 +267,7 @@ pub(all) struct IncrementalRenderEngine {
   sparse_grid : SparseSpatialGrid
   stroke_clusterer : StrokeClusterEngine
   dirty_tracker : DirtyRectTracker
-  vbo_arena : ZeroCopyVertexArena
+  vbo_arena : FlatVertexArena
   sdf_atlas : SdfTextureAtlas
   framebuffer : Framebuffer
   primitives : Array[RenderPrimitive]
@@ -281,25 +281,29 @@ pub fn IncrementalRenderEngine::new(
   height : Int,
   tile_size : Double,
 ) -> IncrementalRenderEngine {
+  // A non-positive tile size means "use the package default".
+  let tile_size = if tile_size > 0.0 { tile_size } else { spatial_default_tile_size }
   let sdf_shapes : Array[SdfShapeKind] = [
     SdfCircle({ x: 0.5, y: 0.5, }, 0.36),
     SdfCapsule({ x: 0.25, y: 0.5, }, { x: 0.75, y: 0.5, }, 0.18),
   ]
-  let sdf_atlas = SdfTextureAtlas::bake_from_shapes(32, 32, sdf_shapes)
+  let sdf_atlas = SdfTextureAtlas::bake_from_shapes(
+    sdf_atlas_default_width, sdf_atlas_default_height, sdf_shapes,
+  )
   {
     width,
     height,
-    topology: VectorTopologyGraph::new(0.05),
+    topology: VectorTopologyGraph::new(tol_eps_mesh),
     reactive: FineGrainedReactiveGraph::new(),
-    rtree: RTree::new(4),
-    sparse_grid: SparseSpatialGrid::new(tile_size, 64),
-    stroke_clusterer: StrokeClusterEngine::new(24.0),
+    rtree: RTree::new(rtree_default_fanout),
+    sparse_grid: SparseSpatialGrid::new(tile_size, spatial_grid_bucket_count),
+    stroke_clusterer: StrokeClusterEngine::new(stroke_cluster_radius),
     dirty_tracker: DirtyRectTracker::new(
       width.to_double(),
       height.to_double(),
       1.20,
     ),
-    vbo_arena: ZeroCopyVertexArena::new(),
+    vbo_arena: FlatVertexArena::new(),
     sdf_atlas,
     framebuffer: Framebuffer::new(
       width,
@@ -315,7 +319,8 @@ pub fn IncrementalRenderEngine::new(
 /// Add a vector quad primitive `(min_x, min_y, max_x, max_y)` with `shader` and `color`
 /// into the engine:
 /// 1. Registers closed polygon face & half-edges in `VectorTopologyGraph`
-/// 2. Allocates zero-copy interleaved vertices & triangle indices in `ZeroCopyVertexArena`
+/// 2. Converts the vertices into interleaved floats in `FlatVertexArena`'s contiguous buffer
+///    and returns a slice view over them
 /// 3. Creates fine-grained reactive signals `(tx, ty)` and computed AABB dependency node
 /// 4. Inserts into `RTree` and `SparseSpatialGrid`, and marks initial `DirtyRect`.
 pub fn IncrementalRenderEngine::add_vector_quad(
@@ -336,7 +341,7 @@ pub fn IncrementalRenderEngine::add_vector_quad(
   let tv3 = self.topology.upsert_vertex({ x: min_x, y: max_y, })
   let _ = self.topology.register_closed_face([tv0, tv1, tv2, tv3], prim_id)
 
-  // 2. Allocate Zero-Copy VBO/IBO Slice
+  // 2. Allocate the VBO/IBO slice (view over the arena's flat buffers)
   let verts : Array[GpuVertex] = [
     { x: min_x, y: min_y, u: 0.0, v: 0.0, color, },
     { x: max_x, y: min_y, u: 1.0, v: 0.0, color, },
@@ -344,14 +349,14 @@ pub fn IncrementalRenderEngine::add_vector_quad(
     { x: min_x, y: max_y, u: 0.0, v: 1.0, color, },
   ]
   let indices : Array[Int] = [0, 1, 2, 0, 2, 3]
-  let slice = self.vbo_arena.allocate_mesh_zero_copy(verts, indices)
+  let slice = self.vbo_arena.allocate_mesh(verts, indices)
   let aabb = Aabb::new(min_x, min_y, max_x, max_y).inflate(1.0)
 
   // 3. Create Fine-Grained Reactive Signals for translation (tx, ty)
   let tx_sig = self.reactive.create_signal(0.0, prim_id)
   let ty_sig = self.reactive.create_signal(0.0, prim_id)
   let comp_node = self.reactive.create_computed(
-    ComputedAabbOffset,
+    ComputedSum,
     [tx_sig, ty_sig],
     prim_id,
   )
@@ -381,7 +386,7 @@ pub fn IncrementalRenderEngine::add_vector_quad(
 /// 1. Simplifies raw samples via Ramer-Douglas-Peucker (`VectorStroke::from_samples`)
 /// 2. Assigns the stroke to a spatial-directional cluster in `StrokeClusterEngine`
 /// 3. Incrementally inserts stroke segments (with planar intersection splitting!) into `VectorTopologyGraph`
-/// 4. Extrudes the simplified polyline into a triangle strip in `ZeroCopyVertexArena`
+/// 4. Extrudes the simplified polyline into a triangle strip in `FlatVertexArena`
 /// 5. Inserts into `RTree`, `SparseSpatialGrid`, and `DirtyRectTracker`.
 /// Returns `(primitive_id, cluster_id)`.
 pub fn IncrementalRenderEngine::add_clustered_vector_stroke(
@@ -405,7 +410,7 @@ pub fn IncrementalRenderEngine::add_clustered_vector_stroke(
     let _ = self.topology.insert_segment_incremental(a, b, prim_id)
     let dx = b.x - a.x
     let dy = b.y - a.y
-    let len = (dx * dx + dy * dy).sqrt().max(1.0e-6)
+    let len = (dx * dx + dy * dy).sqrt().max(tol_eps_mesh)
     let nx = -dy / len * half_w
     let ny = dx / len * half_w
     let base = verts.length()
@@ -421,12 +426,12 @@ pub fn IncrementalRenderEngine::add_clustered_vector_stroke(
     indices.push(base + 3)
   }
 
-  let slice = self.vbo_arena.allocate_mesh_zero_copy(verts, indices)
+  let slice = self.vbo_arena.allocate_mesh(verts, indices)
   let aabb = stroke.aabb
   let tx_sig = self.reactive.create_signal(0.0, prim_id)
   let ty_sig = self.reactive.create_signal(0.0, prim_id)
   let comp_node = self.reactive.create_computed(
-    ComputedAabbOffset,
+    ComputedSum,
     [tx_sig, ty_sig],
     prim_id,
   )
@@ -513,7 +518,7 @@ pub fn IncrementalRenderEngine::local_cull_for_dirty_rect(
 ///|
 /// Execute one complete Incremental Render Frame (增量渲染主管線):
 /// 1. Propagate fine-grained reactive signals -> get dirty primitives
-/// 2. For each dirty primitive: record old AABB in DirtyRectTracker, patch VBO in-place (zero-copy),
+/// 2. For each dirty primitive: record old AABB in DirtyRectTracker, patch the VBO floats in place,
 ///    update R-Tree and Sparse Grid, and record new AABB in DirtyRectTracker
 /// 3. Coalesce Dirty Rectangles
 /// 4. For each coalesced Dirty Rectangle:
@@ -531,7 +536,7 @@ pub fn IncrementalRenderEngine::render_incremental_frame(
   // 1. Fine-Grained Reactive Propagation
   let dirty_prims = self.reactive.propagate_dirty()
 
-  // 2. Zero-Copy VBO In-Place Patch + Spatial Index Update + Dirty Rect Registration
+  // 2. In-Place VBO Patch + Spatial Index Update + Dirty Rect Registration
   for pid in dirty_prims {
     if pid >= 0 && pid < self.primitives.length() {
       let p = self.primitives[pid]
@@ -539,7 +544,7 @@ pub fn IncrementalRenderEngine::render_incremental_frame(
       let cur_ty = self.reactive.nodes[p.ty_signal_id].value
       let dx = cur_tx - p.prev_tx
       let dy = cur_ty - p.prev_ty
-      if dx.abs() > 1.0e-9 || dy.abs() > 1.0e-9 {
+      if dx.abs() > tol_eps || dy.abs() > tol_eps {
         // Mark old AABB dirty so old trail is erased
         self.dirty_tracker.mark_dirty_aabb(p.aabb)
         self.sparse_grid.remove_primitive(pid, p.aabb)
@@ -586,7 +591,7 @@ pub fn IncrementalRenderEngine::render_incremental_frame(
       if pid >= 0 && pid < self.primitives.length() {
         drawn_map[pid] = true
         let prim = self.primitives[pid]
-        let _ = self.framebuffer.rasterize_slice_zero_copy_local(
+        let _ = self.framebuffer.rasterize_slice_local(
           self.vbo_arena,
           prim.slice,
           prim.transform,
@@ -616,7 +621,7 @@ pub fn IncrementalRenderEngine::render_incremental_frame(
     pixels_shaded_in_frame: self.framebuffer.pixels_shaded_total - prev_shaded,
     subsamples_evaluated_in_frame: self.framebuffer.subsamples_tested_total -
     prev_subsamples,
-    zero_copy_in_place_updates: self.vbo_arena.in_place_mutations -
+    in_place_buffer_updates: self.vbo_arena.in_place_mutations -
     prev_in_place,
     active_sparse_tiles: self.sparse_grid.active_tile_count,
     stroke_clusters_count: self.stroke_clusterer.clusters.length(),

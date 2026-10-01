@@ -1,6 +1,6 @@
 ///|
 /// Vector Incremental Topology (向量增量拓撲 - Planar Half-Edge DCEL Graph)
-/// and Fine-Grained Reactivity (細粒度響應式 - Push-Pull Signal/Computed Dependency DAG).
+/// and Fine-Grained Reactivity (細粒度響應式 - dirty 標記推送 + 依賴序重算 Signal/Computed DAG).
 
 ///|
 /// 2D Vector / Point in world or screen space.
@@ -10,8 +10,12 @@ pub(all) struct Vec2 {
 } derive(Eq, Debug)
 
 ///|
+pub extend Aabb with Eq::{equal, not_equal}
+
+///|
 pub extend Vec2 with Eq::{equal, not_equal}
 
+///|
 ///|
 #deprecated("Use `Debug::to_repr` instead", skip_current_package=true)
 #doc(hidden)
@@ -41,8 +45,6 @@ pub(all) struct Aabb {
 } derive(Eq, Debug)
 
 ///|
-pub extend Aabb with Eq::{equal, not_equal}
-
 ///|
 #deprecated("Use `Debug::to_repr` instead", skip_current_package=true)
 #doc(hidden)
@@ -104,6 +106,27 @@ pub fn Aabb::intersection(self : Aabb, other : Aabb) -> Aabb? {
   } else {
     None
   }
+}
+
+///|
+/// Smallest AABB enclosing every point in `points`; `None` when the list is empty.
+/// Single place for the min/max accumulation that used to be open-coded in every
+/// geometry routine.
+pub fn Aabb::from_points(points : Array[Vec2]) -> Aabb? {
+  if points.length() == 0 {
+    return None
+  }
+  let mut min_x = scan_infinity
+  let mut min_y = scan_infinity
+  let mut max_x = -scan_infinity
+  let mut max_y = -scan_infinity
+  for p in points {
+    min_x = min_x.min(p.x)
+    min_y = min_y.min(p.y)
+    max_x = max_x.max(p.x)
+    max_y = max_y.max(p.y)
+  }
+  Some(Aabb::new(min_x, min_y, max_x, max_y))
 }
 
 ///|
@@ -224,7 +247,7 @@ pub fn intersect_open_segments(
   let s_x = p4.x - p3.x
   let s_y = p4.y - p3.y
   let denom = r_x * s_y - r_y * s_x
-  if denom.abs() < 1.0e-9 {
+  if denom.abs() < tol_eps {
     return None
   }
   let qp_x = p3.x - p1.x
@@ -542,7 +565,6 @@ pub(all) enum ReactiveNodeKind {
   SourceSignal
   ComputedSum
   ComputedScale(Double)
-  ComputedAabbOffset
 }
 
 ///|
@@ -560,7 +582,7 @@ pub(all) struct ReactiveNode {
 
 ///|
 /// Fine-Grained Reactive Graph (細粒度響應式系統):
-/// Tracks exact signal-to-computed-to-primitive dependencies with glitch-free
+/// Tracks the signal-to-computed-to-primitive dependencies with glitch-free
 /// topological propagation so only mutated vector primitives and their dirty rects
 /// are recomputed and re-rasterized.
 pub(all) struct FineGrainedReactiveGraph {
@@ -670,15 +692,8 @@ fn FineGrainedReactiveGraph::evaluate_node(
       } else {
         0.0
       }
-    ComputedAabbOffset => {
-      let mut acc = 0.0
-      for d in node.deps {
-        acc = acc + self.nodes[d].value
-      }
-      acc
-    }
   }
-  let changed = (new_val - node.value).abs() > 1.0e-12 || node.version == 0
+  let changed = (new_val - node.value).abs() > tol_eps_tight || node.version == 0
   self.nodes[node_id].value = new_val
   self.nodes[node_id].dirty = false
   if changed {
@@ -698,7 +713,7 @@ pub fn FineGrainedReactiveGraph::set_signal(
   if signal_id < 0 || signal_id >= self.nodes.length() {
     return
   }
-  if (self.nodes[signal_id].value - new_val).abs() <= 1.0e-12 {
+  if (self.nodes[signal_id].value - new_val).abs() <= tol_eps_tight {
     return
   }
   self.nodes[signal_id].value = new_val
@@ -763,7 +778,7 @@ fn FineGrainedReactiveGraph::dirty_evaluation_order(
 
 ///|
 /// Glitch-free topological propagation of all dirty computed nodes.
-/// Returns the exact list of primitive IDs invalidated in this reactive transaction.
+/// Returns the list of primitive IDs invalidated in this reactive transaction.
 pub fn FineGrainedReactiveGraph::propagate_dirty(
   self : FineGrainedReactiveGraph,
 ) -> Array[Int] {
