@@ -51,8 +51,7 @@ pub(all) enum AxiomOrigin {
   LraFarkasAxiom(Int) // (farkas_certificate_id)
   LiaIntegralityCut(Int) // (arith_var_id)
   QapDiscretePruneAxiom(Int) // (qap_node_level)
-  CacIdealReductionAxiom(Int) // (cad_cell_level)
-  LrbOptimalLemma(Int) // (scaled_bound_int)
+  OptimalBoundLemma(Int) // (scaled_bound_int)
 } derive(Eq)
 
 ///|
@@ -132,6 +131,17 @@ pub fn push_unique(arr : Array[Int], value : Int) -> Unit {
 }
 
 ///|
+/// Push the negation of guard literal `r` into `lits`, skipping the unconditional marker 0
+/// and keeping the clause duplicate-free. Shared by the LRA bound-conflict builder, the
+/// covering check and the EUF congruence conflicts.
+fn push_reason_lit(lits : Array[Int], r : Int) -> Unit {
+  if r == 0 {
+    return
+  }
+  push_unique(lits, lit_neg(r))
+}
+
+///|
 /// Create a new certified Clause.
 pub fn Clause::new(
   id : Int,
@@ -155,8 +165,6 @@ pub fn Clause::new(
 /// EUF & Kleisli Term DAG node.
 pub(all) enum Term {
   Var(String, Int) // (symbol_name, variable_id)
-  IntConst(Int)
-  RealConst(Double)
   App(String, Array[Int]) // (uninterpreted_func_name, arg_term_ids)
 } derive(Eq)
 
@@ -182,16 +190,6 @@ pub fn LinearTerm::eval(
     }
   }
   acc
-}
-
-///|
-/// Theory Atom linking Boolean abstraction variables to EUF, LRA, LIA, and CAC theories.
-pub(all) enum TheoryAtom {
-  EufEq(Int, Int) // term_id_1 == term_id_2
-  EufNeq(Int, Int) // term_id_1 != term_id_2
-  LraConstraint(LinearTerm, ArithOp, Double) // linear real constraint
-  LiaConstraint(LinearTerm, ArithOp, Int) // linear integer constraint
-  PolyConstraint(Int, ArithOp, Double) // polynomial index in CAC ring
 }
 
 ///|

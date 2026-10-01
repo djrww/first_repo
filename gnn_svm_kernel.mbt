@@ -244,10 +244,12 @@ pub fn OmtGnn::add_euf_congruence_edge(
 
 ///|
 /// Execute `rounds` iterations of heterogeneous Clause-Variable-EUF message passing.
+/// `activity_scores` carries the normalised VSIDS activity per variable (values in [0, 1]),
+/// which becomes the per-variable search-state feature of the message passing.
 pub fn OmtGnn::forward_message_passing(
   self : OmtGnn,
   clauses : Array[Clause],
-  lrb_ema_scores : Array[Double],
+  activity_scores : Array[Double],
   rounds : Int,
 ) -> Unit {
   let d = self.embed_dim
@@ -255,10 +257,10 @@ pub fn OmtGnn::forward_message_passing(
   while self.clause_embeddings.length() < clauses.length() {
     self.clause_embeddings.push(Array::make(d, 0.0))
   }
-  // Inject latest LRB conflict participation rate into feature 5
+  // Inject the latest VSIDS activity (normalised to [0, 1]) into feature 5
   for v = 1; v <= self.num_vars; v = v + 1 {
-    if v < lrb_ema_scores.length() {
-      self.var_embeddings[v][5] = lrb_ema_scores[v].clamp(min=0.0, max=1.0)
+    if v < activity_scores.length() {
+      self.var_embeddings[v][5] = activity_scores[v].clamp(min=0.0, max=1.0)
     }
   }
 
@@ -335,12 +337,12 @@ pub fn OmtGnn::predict_branch_score(
     return 0.0
   }
   let emb = self.var_embeddings[v]
-  let gnn_logit = 0.40 * emb[0].abs() +
-    0.40 * emb[1].abs() +
-    0.55 * emb[2].abs() +
-    0.30 * emb[3].abs() +
-    0.45 * emb[4] +
-    0.65 * emb[5]
+  let gnn_logit = gnn_branch_weight_pos_deg * emb[0].abs() +
+    gnn_branch_weight_neg_deg * emb[1].abs() +
+    gnn_branch_weight_obj * emb[2].abs() +
+    gnn_branch_weight_balance * emb[3].abs() +
+    gnn_branch_weight_dim4 * emb[4] +
+    gnn_branch_weight_activity * emb[5]
   let svm_margin = svm.decision_function(emb, emb[3] > 0.5)
   let combined = gnn_logit + gnn_svm_mix * svm_margin.abs()
   1.0 / (1.0 + @math.exp(-combined))
@@ -361,7 +363,9 @@ pub fn OmtGnn::predict_optimal_polarity(self : OmtGnn, v : Int) -> Bool {
     0.0
   }
   // Structural pressure (pos_deg - neg_deg) minus objective minimization cost
-  let score = (emb[0] - emb[1]) * 1.2 - obj_w * 0.45 + 0.2 * emb[3]
+  let score = (emb[0] - emb[1]) * gnn_polarity_structural_weight -
+    obj_w * gnn_polarity_objective_weight +
+    gnn_polarity_balance_weight * emb[3]
   score >= 0.0
 }
 

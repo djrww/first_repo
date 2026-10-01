@@ -20,7 +20,9 @@ keywords = [
   "lia",
   "gnn",
   "svm",
-  "lrb",
+  "vsids",
+  "conflict-graph",
+  "smt-lib",
   "qap",
   "rendering-engine",
   "rasterizer",
@@ -31,4 +33,4 @@ keywords = [
 
 preferred_target = "wasm"
 
-description = "Self-Developed OMT + GNN + CDCL(T) + Lazy SMT Unified Solver & Incremental Vector/Raster Rendering Engine in MoonBit"
+description = "Self-Developed OMT + GNN + SVM + VSIDS + Conflict Graph + CDCL(T) + Lazy SMT Unified Solver & Incremental Vector/Raster Rendering Engine in MoonBit"

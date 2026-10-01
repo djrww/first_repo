@@ -549,17 +549,6 @@ pub fn VectorTopologyGraph::active_undirected_edge_count(
 }
 
 ///|
-/// Compute the topological Euler characteristic chi = V - E + F of the active graph.
-pub fn VectorTopologyGraph::euler_characteristic(
-  self : VectorTopologyGraph,
-) -> Int {
-  let v = self.vertices.length()
-  let e = self.active_undirected_edge_count()
-  let f = self.faces.length()
-  v - e + f
-}
-
-///|
 /// Node kind in the Fine-Grained Reactive Dependency Graph (細粒度響應式).
 pub(all) enum ReactiveNodeKind {
   SourceSignal

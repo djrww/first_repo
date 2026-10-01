@@ -260,7 +260,9 @@ pub fn RTree::insert(self : RTree, primitive_id : Int, aabb : Aabb) -> Unit {
 }
 
 ///|
-/// Incrementally update an existing primitive's AABB in the R-tree and propagate tight bounds upward.
+/// Incrementally update an existing primitive's AABB in the R-tree and propagate tight bounds
+/// upward. The primitive's leaf is located by scanning the leaf nodes (O(N)); the tree does
+/// not maintain a primitive -> leaf index.
 pub fn RTree::update_primitive_aabb(
   self : RTree,
   primitive_id : Int,
@@ -329,13 +331,14 @@ pub fn RTree::query_aabb(self : RTree, query_box : Aabb) -> Array[Int] {
 }
 
 ///|
-/// Interleave the lower 14 bits of `tx` and `ty` (each clamped to 0..16383) into a
-/// 28-bit Morton Z-order curve code.
+/// Interleave the lower `morton_coord_bits` bits of `tx` and `ty` (each clamped to the
+/// representable coordinate range) into a Morton Z-order curve code.
 pub fn morton_encode_2d(tx : Int, ty : Int) -> Int {
-  let ux = tx.clamp(min=0, max=16383)
-  let uy = ty.clamp(min=0, max=16383)
+  let max_coord = (1 << morton_coord_bits) - 1
+  let ux = tx.clamp(min=0, max=max_coord)
+  let uy = ty.clamp(min=0, max=max_coord)
   let mut code = 0
-  for bit = 0; bit < 14; bit = bit + 1 {
+  for bit = 0; bit < morton_coord_bits; bit = bit + 1 {
     let bx = (ux >> bit) & 1
     let by = (uy >> bit) & 1
     code = code | (bx << (2 * bit)) | (by << (2 * bit + 1))
@@ -348,9 +351,7 @@ pub fn morton_encode_2d(tx : Int, ty : Int) -> Int {
 pub(all) struct SparseTileCell {
   tile_x : Int
   tile_y : Int
-  morton_key : Int
   primitives : Array[Int]
-  mut dirty : Bool
 }
 
 ///|
@@ -388,12 +389,16 @@ pub fn SparseSpatialGrid::new(
 }
 
 ///|
-/// Convert a world coordinate `x` to integer tile index.
+/// Convert a world coordinate `x` to a signed integer tile index. Coordinates on the
+/// negative side of the canvas map to negative tile indices, so the grid really tiles the
+/// infinite canvas instead of folding all negative space into column/row 0.
+/// (`morton_encode_2d` still clamps the *hash* input to 0..16383; bucket collisions are
+/// harmless because a cell is identified by its exact `(tile_x, tile_y)` pair.)
 fn SparseSpatialGrid::coord_to_tile(
   self : SparseSpatialGrid,
   c : Double,
 ) -> Int {
-  (c / self.tile_size).floor().to_int().max(0)
+  (c / self.tile_size).floor().to_int()
 }
 
 ///|
@@ -415,9 +420,7 @@ fn SparseSpatialGrid::get_or_create_cell(
   bucket.push({
     tile_x: tx,
     tile_y: ty,
-    morton_key: mkey,
     primitives: [],
-    dirty: true,
   })
   self.active_tile_count = self.active_tile_count + 1
   self.total_cells_allocated = self.total_cells_allocated + 1
@@ -448,7 +451,6 @@ pub fn SparseSpatialGrid::insert_primitive(
       if !exists {
         prims.push(primitive_id)
       }
-      self.buckets[b_idx][c_idx].dirty = true
     }
   }
 }
@@ -495,8 +497,6 @@ pub fn SparseSpatialGrid::remove_primitive(
         bucket[slot] = bucket[last]
         let _ = bucket.pop()
         self.active_tile_count = (self.active_tile_count - 1).max(0)
-      } else {
-        bucket[slot].dirty = true
       }
     }
   }
@@ -667,6 +667,9 @@ pub(all) struct StrokeCluster {
   stroke_ids : Array[Int]
   mut merged_aabb : Aabb
   mut centroid : Vec2
+  /// Running average of the member strokes' unit tangents, used to pick the best-fitting
+  /// cluster among the candidates whose boxes overlap a new stroke.
+  mut mean_tangent : Vec2
   mut total_raw_vertices : Int
   mut total_simplified_vertices : Int
 }
@@ -687,8 +690,12 @@ pub fn StrokeClusterEngine::new(spatial_radius : Double) -> StrokeClusterEngine 
 }
 
 ///|
-/// Insert a `VectorStroke` into the best matching cluster (by AABB proximity & tangent affinity)
-/// or allocate a new cluster if no existing cluster is within `spatial_radius`.
+/// Insert a `VectorStroke` into the best matching cluster (by AABB proximity, then tangent
+/// affinity) or allocate a new cluster if no existing cluster is within `spatial_radius`.
+/// The proximity test of the inflated boxes decides which clusters are candidates; among
+/// those candidates the one whose accumulated `mean_tangent` best agrees with the stroke's
+/// own tangent is chosen, with the overlap area as a tie-break. That is what makes the
+/// clustering spatial-directional rather than purely spatial.
 pub fn StrokeClusterEngine::add_stroke_to_clusters(
   self : StrokeClusterEngine,
   stroke : VectorStroke,
@@ -698,23 +705,44 @@ pub fn StrokeClusterEngine::add_stroke_to_clusters(
     x: 0.5 * (stroke.aabb.min_x + stroke.aabb.max_x),
     y: 0.5 * (stroke.aabb.min_y + stroke.aabb.max_y),
   }
+  let mut best_idx = -1
+  let mut best_affinity = -2.0
+  let mut best_overlap = -1.0
   for i = 0; i < self.clusters.length(); i = i + 1 {
     if self.clusters[i].merged_aabb.intersects(expanded_box) {
-      self.clusters[i].stroke_ids.push(stroke.id)
-      self.clusters[i].merged_aabb = self.clusters[i].merged_aabb.union(
-        stroke.aabb,
-      )
-      let k = self.clusters[i].stroke_ids.length().to_double()
-      self.clusters[i].centroid = {
-        x: (self.clusters[i].centroid.x * (k - 1.0) + stroke_center.x) / k,
-        y: (self.clusters[i].centroid.y * (k - 1.0) + stroke_center.y) / k,
+      let overlap = match stroke.aabb.intersection(self.clusters[i].merged_aabb) {
+        Some(box) => box.area()
+        None => 0.0
       }
-      self.clusters[i].total_raw_vertices = self.clusters[i].total_raw_vertices +
-        stroke.raw_points.length()
-      self.clusters[i].total_simplified_vertices = self.clusters[i].total_simplified_vertices +
-        stroke.simplified_points.length()
-      return self.clusters[i].cluster_id
+      let affinity = stroke.mean_tangent.x * self.clusters[i].mean_tangent.x +
+        stroke.mean_tangent.y * self.clusters[i].mean_tangent.y
+      if affinity > best_affinity + tol_eps ||
+        ((affinity - best_affinity).abs() <= tol_eps && overlap > best_overlap) {
+        best_affinity = affinity
+        best_overlap = overlap
+        best_idx = i
+      }
     }
+  }
+  if best_idx >= 0 {
+    self.clusters[best_idx].stroke_ids.push(stroke.id)
+    self.clusters[best_idx].merged_aabb = self.clusters[best_idx].merged_aabb.union(
+      stroke.aabb,
+    )
+    let k = self.clusters[best_idx].stroke_ids.length().to_double()
+    self.clusters[best_idx].centroid = {
+      x: (self.clusters[best_idx].centroid.x * (k - 1.0) + stroke_center.x) / k,
+      y: (self.clusters[best_idx].centroid.y * (k - 1.0) + stroke_center.y) / k,
+    }
+    self.clusters[best_idx].mean_tangent = {
+      x: (self.clusters[best_idx].mean_tangent.x * (k - 1.0) + stroke.mean_tangent.x) / k,
+      y: (self.clusters[best_idx].mean_tangent.y * (k - 1.0) + stroke.mean_tangent.y) / k,
+    }
+    self.clusters[best_idx].total_raw_vertices = self.clusters[best_idx].total_raw_vertices +
+      stroke.raw_points.length()
+    self.clusters[best_idx].total_simplified_vertices = self.clusters[best_idx].total_simplified_vertices +
+      stroke.simplified_points.length()
+    return self.clusters[best_idx].cluster_id
   }
   let cid = self.clusters.length()
   self.clusters.push({
@@ -722,6 +750,7 @@ pub fn StrokeClusterEngine::add_stroke_to_clusters(
     stroke_ids: [stroke.id],
     merged_aabb: stroke.aabb,
     centroid: stroke_center,
+    mean_tangent: stroke.mean_tangent,
     total_raw_vertices: stroke.raw_points.length(),
     total_simplified_vertices: stroke.simplified_points.length(),
   })
@@ -771,7 +800,7 @@ pub fn DirtyRectTracker::mark_dirty_aabb(
   }
   match region.intersection(viewport) {
     Some(clipped) =>
-      if clipped.area() > 1.0e-6 {
+      if clipped.area() > tol_eps_mesh {
         self.raw_dirty_rects.push(clipped)
       }
     None => ()

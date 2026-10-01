@@ -121,7 +121,7 @@ pub fn FlatVertexArena::allocate_mesh(
   vertices : Array[GpuVertex],
   local_indices : Array[Int],
 ) -> ArenaBufferSlice {
-  let stride = 8
+  let stride = gpu_vertex_stride
   let vbo_offset = self.raw_vbo_floats.length()
   let base_vertex_idx = vbo_offset / stride
   for vert in vertices {
@@ -176,7 +176,7 @@ pub fn FlatVertexArena::read_global_vertex(
   self : FlatVertexArena,
   global_vertex_idx : Int,
 ) -> GpuVertex {
-  let base = global_vertex_idx * 8
+  let base = global_vertex_idx * gpu_vertex_stride
   {
     x: self.raw_vbo_floats[base],
     y: self.raw_vbo_floats[base + 1],
@@ -296,7 +296,7 @@ pub fn SdfTextureAtlas::bake_from_shapes(
     for x = 0; x < w; x = x + 1 {
       let u = (x.to_double() + 0.5) / w.to_double()
       let pt : Vec2 = { x: u, y: v, }
-      let mut min_d = ray_max_distance
+      let mut min_d = sdf_bake_distance_sentinel
       for s in shapes {
         let d = eval_analytical_sdf(s, pt)
         if d < min_d {

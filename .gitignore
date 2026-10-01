@@ -1,7 +1,6 @@
 # MoonBit Build & Package Artifacts
 _build/
 target/
-target
 .mooncakes/
 .moonagent/
 *.wasm

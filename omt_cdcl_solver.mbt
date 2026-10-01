@@ -1,6 +1,10 @@
 ///|
 /// High-Level Benchmark & Scenario Orchestrator for the Self-Developed
-/// OMT + GNN + SVM + HPA *Closure + Kleisli + BBF + LRB + Hybrid-6 + QAP + CAC + CDCL(T) Solver.
+/// OMT + GNN + SVM + HPA *Closure + Kleisli + BBF + VSIDS + Hybrid-6 + QAP + CDCL(T) Solver.
+///
+/// The SMT-LIB front-end, the plain CDCL(T) satisfiability solver and the implication /
+/// conflict graph live in `smtlib_frontend.mbt`, `cdclt_solver.mbt`, `conflict_graph.mbt`
+/// and `compliance_scenarios.mbt`; this file keeps the end-to-end OMT scenarios.
 
 ///|
 /// Scenario 1: Lazy SMT + LRA + LIA + EUF (HPA *Closure & Kleisli Unification) + OMT.
@@ -89,12 +93,12 @@ pub fn run_lazy_smt_lra_lia_euf_omt_scenario() -> OmtSolveResult {
 }
 
 ///|
-/// Scenario 2: QAP Incremental Discrete Pruning + Dual-Layer CDN + Cooperative LRB Hybrid-6.
+/// Scenario 2: QAP Incremental Discrete Pruning + Dual-Layer CDN + Hybrid-6.
 /// Solves a 3x3 Facility-Location Quadratic Assignment Problem (9 Boolean vars x_{i,k}):
 ///   Facility 0..2 assigned to Location 0..2.
 ///   Linear + Quadratic Flow-Distance objective minimized via QAP Incremental Discrete Pruner
-///   and Cooperative LRB Hybrid-6 Dynamic Lower Bound.
-pub fn run_qap_lrb_hybrid6_scenario() -> OmtSolveResult {
+///   and the Hybrid-6 Dynamic Lower Bound.
+pub fn run_qap_hybrid6_scenario() -> OmtSolveResult {
   let n = 3
   let num_vars = n * n // vars 1..9
   let bool_weights = Array::make(num_vars + 1, 0.0)
@@ -119,75 +123,6 @@ pub fn run_qap_lrb_hybrid6_scenario() -> OmtSolveResult {
   solver.attach_qap_pruner(qap)
 
   solver.solve_omt(200)
-}
-
-///|
-/// Scenario 3: Ring-Lifted Cylindrical Algebraic Covering (CAC) Ideal Reduction &
-/// Homomorphic Conservation Ideal + Surjective Axiom Invariant Verification.
-pub fn run_cac_ideal_and_conservation_scenario() -> (Double, Bool, Bool, Int) {
-  // 1. Construct polynomial ring Q[x_0, x_1]
-  // Ideal generators: g_1 = x_0^2 - x_1 - 1, g_2 = x_1 - 3
-  // Under I = <g_1, g_2>, x_0^2 reduces to 4!
-  // Let f = x_0^2 + 2*x_1 + 5. Modulo <g_1, g_2>, f reduces to 4 + 6 + 5 = 15.
-  let g1 : MultivariatePoly = {
-    num_vars: 2,
-    terms: [
-      { coeff: 1.0, exponents: [2, 0], },
-      { coeff: -1.0, exponents: [0, 1], },
-      { coeff: -1.0, exponents: [0, 0], },
-    ],
-  }
-  let g2 : MultivariatePoly = {
-    num_vars: 2,
-    terms: [
-      { coeff: 1.0, exponents: [0, 1], },
-      { coeff: -3.0, exponents: [0, 0], },
-    ],
-  }
-  let f : MultivariatePoly = {
-    num_vars: 2,
-    terms: [
-      { coeff: 1.0, exponents: [2, 0], },
-      { coeff: 2.0, exponents: [0, 1], },
-      { coeff: 5.0, exponents: [0, 0], },
-    ],
-  }
-  let reduced = reduce_poly_modulo_ideal(f, [g1, g2])
-  let reduced_const = reduced.eval([0.0, 0.0])
-
-  // 2. Verify Ring-Lifted CAC conflict extraction when reduced polynomial violates constraint
-  let cac = CylindricalAlgebraicCovering::new(2)
-  cac.add_ideal_generator(g1)
-  cac.add_ideal_generator(g2)
-  // Require f(x_0, x_1) <= 10.0 guarded by literal +1.
-  // The reduction of f modulo <g_1, g_2> is the non-zero constant 15, which decides the
-  // relation exactly on the whole ideal variety: f <= 10 is unsatisfiable everywhere, so
-  // the conflict is a proof (no sampling is involved).
-  cac.add_constraint(f, Le, 10.0, 1)
-  let cac_conflict = cac.check_cylindrical_covering(
-    [0.0, 0.0],
-    [-5.0, -5.0],
-    [5.0, 5.0],
-    0,
-  )
-  let cac_detected_infeasible = match cac_conflict {
-    Some(c) => c.lits.length() == 1 && c.lits[0] == -1
-    None => false
-  }
-
-  // 3. Verify Homomorphic Conservation Ideal on resolution (x_1 v x_2) and (~x_1 v x_3) => (x_2 v x_3)
-  let ideal = HomomorphicConservationIdeal::new(3)
-  let c1 = Clause::new(0, [1, 2], false, 2, ProblemInput)
-  let c2 = Clause::new(1, [-1, 3], false, 2, ProblemInput)
-  let cres = Clause::new(2, [2, 3], true, 2, UipResolution(2, 1))
-  let resolution_conserved = ideal.verify_resolution_conservation(c1, c2, cres)
-
-  (
-    reduced_const,
-    cac_detected_infeasible,
-    resolution_conserved,
-    cac.ideal_reductions_count,
-  )
 }
 
 ///|

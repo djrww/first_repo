@@ -1,6 +1,8 @@
 ///|
-/// Ring-Lifted Cylindrical Algebraic Covering (CAC) Ideal Reduction,
-/// Lazy SMT + CDCL(T) Homomorphic Conservation Ideal, and
+/// Polynomial / ideal-reduction algebra and clause certification shared by the OMT engine
+/// and the CDCL(T) solver: multivariate polynomials over Q, Groebner-style reduction and
+/// S-polynomials, the homomorphic conservation ideal used to justify learnt clauses, and
+/// the surjective axiom projector that certifies every clause origin.
 /// Superposed Cooperative Exhaustive Upper-Bound Resolution Clause Surjective Axiom Invariant Projector.
 
 ///|
@@ -321,123 +323,6 @@ pub fn compute_spoly(
 }
 
 ///|
-/// Ring-Lifted Cylindrical Algebraic Covering (環升態圓柱代數覆蓋理想歸約) engine.
-pub(all) struct CylindricalAlgebraicCovering {
-  num_arith_vars : Int
-  ideal_generators : Array[MultivariatePoly]
-  // Active inequality constraints: (poly, op, rhs, reason_lit)
-  active_constraints : Array[(MultivariatePoly, ArithOp, Double, Int)]
-  mut ideal_reductions_count : Int
-  mut cac_pruned_cells : Int
-}
-
-///|
-/// Create a new CylindricalAlgebraicCovering engine.
-pub fn CylindricalAlgebraicCovering::new(
-  num_arith_vars : Int,
-) -> CylindricalAlgebraicCovering {
-  {
-    num_arith_vars,
-    ideal_generators: [],
-    active_constraints: [],
-    ideal_reductions_count: 0,
-    cac_pruned_cells: 0,
-  }
-}
-
-///|
-/// Add an algebraic equality generator g(x) = 0 to the polynomial ring ideal.
-pub fn CylindricalAlgebraicCovering::add_ideal_generator(
-  self : CylindricalAlgebraicCovering,
-  g : MultivariatePoly,
-) -> Unit {
-  self.ideal_generators.push(g.normalize())
-}
-
-///|
-/// Register a guarded polynomial inequality constraint `poly(x) op rhs` with `reason_lit`.
-pub fn CylindricalAlgebraicCovering::add_constraint(
-  self : CylindricalAlgebraicCovering,
-  poly : MultivariatePoly,
-  op : ArithOp,
-  rhs : Double,
-  reason_lit : Int,
-) -> Unit {
-  self.active_constraints.push((poly.normalize(), op, rhs, reason_lit))
-}
-
-///|
-/// Execute Ring-Lifted Cylindrical Algebraic Covering (CAC) ideal reduction over the box
-/// `[var_lb[k], var_ub[k]]`.
-/// Returns `Some(conflict_clause)` only when the violation is *provable* for every point of
-/// the box:
-///   * the ideal reduction of the constraint polynomial is a non-zero constant, so the
-///     relation is decided exactly on the whole variety cut out by the ideal generators, or
-///   * sound interval arithmetic on the reduced polynomial proves the relation violated
-///     everywhere on the box.
-/// Point sampling alone never produces a conflict: a finite sample cannot establish that a
-/// whole cylinder is covered, so an inconclusive cell is reported as `None`.
-pub fn CylindricalAlgebraicCovering::check_cylindrical_covering(
-  self : CylindricalAlgebraicCovering,
-  base_sample : Array[Double],
-  var_lb : Array[Double],
-  var_ub : Array[Double],
-  next_clause_id : Int,
-) -> Clause? {
-  let _ = base_sample
-  if self.active_constraints.length() == 0 {
-    return None
-  }
-  // Sound box for the interval reasoning
-  let box_lb : Array[Double] = []
-  let box_ub : Array[Double] = []
-  for k = 0; k < self.num_arith_vars; k = k + 1 {
-    let lb_k = if k < var_lb.length() { var_lb[k] } else { -arith_initial_bound }
-    let ub_k = if k < var_ub.length() { var_ub[k] } else { arith_initial_bound }
-    if lb_k > ub_k + tol_eps {
-      return None
-    }
-    box_lb.push(lb_k)
-    box_ub.push(ub_k)
-  }
-  for item in self.active_constraints {
-    let (poly, op, rhs, rlit) = item
-    let reduced = reduce_poly_modulo_ideal(poly, self.ideal_generators)
-    self.ideal_reductions_count = self.ideal_reductions_count + 1
-    let proven_violation = if is_constant_poly(reduced) {
-      // The relation is decided exactly on the whole ideal variety
-      !eval_arith_op(reduced.terms[0].coeff, op, rhs)
-    } else {
-      let (min_val, max_val) = interval_eval_poly(reduced, box_lb, box_ub)
-      match op {
-        Le => min_val > rhs + 1.0e-7
-        Lt => min_val > rhs - 1.0e-7
-        Ge => max_val < rhs - 1.0e-7
-        Gt => max_val < rhs + 1.0e-7
-        Eq => min_val > rhs + poly_nonzero_tol || max_val < rhs - poly_nonzero_tol
-      }
-    }
-    if proven_violation {
-      self.cac_pruned_cells = self.cac_pruned_cells + 1
-      let conflict_lits : Array[Int] = []
-      if rlit != 0 {
-        conflict_lits.push(lit_neg(rlit))
-      }
-      return Some(
-        Clause::new(
-          next_clause_id,
-          conflict_lits,
-          true,
-          conflict_lits.length().max(1),
-          CacIdealReductionAxiom(0),
-        ),
-      )
-    }
-  }
-  None
-}
-
-///|
 /// Lazy SMT + CDCL(T) Homomorphic Conservation Ideal Verifier (同態守恆理想).
 /// Maps CNF clauses homomorphically into the Boolean quotient polynomial ring
 /// R[x_1, ..., x_n] / <x_i^2 - x_i>:
@@ -577,7 +462,7 @@ pub fn HomomorphicConservationIdeal::verify_all_clauses_conserved(
 pub(all) struct SurjectiveAxiomProjector {
   mut total_certified_clauses : Int
   mut upper_bound_projections : Int
-  schema_coverage : Array[Int] // Counts per AxiomOrigin category (9 categories)
+  schema_coverage : Array[Int] // Counts per AxiomOrigin category (8 categories)
 }
 
 ///|
@@ -586,16 +471,43 @@ pub fn SurjectiveAxiomProjector::new() -> SurjectiveAxiomProjector {
   {
     total_certified_clauses: 0,
     upper_bound_projections: 0,
-    schema_coverage: Array::make(9, 0),
+    schema_coverage: Array::make(8, 0),
   }
 }
 
 ///|
-/// Map an AxiomOrigin to its canonical index in [0..8] and record surjective coverage.
+/// Structural well-formedness of a clause: no literal 0 (which the guard handling reads as
+/// "unconditional"), no duplicated literal, and no literal together with its negation.
+/// Such clauses cannot be used as proof lemmas and would corrupt LBD bookkeeping.
+fn is_well_formed_clause(lits : Array[Int]) -> Bool {
+  for i = 0; i < lits.length(); i = i + 1 {
+    let lit = lits[i]
+    if lit == 0 {
+      return false
+    }
+    for j = i + 1; j < lits.length(); j = j + 1 {
+      if lits[j] == lit || lits[j] == lit_neg(lit) {
+        return false
+      }
+    }
+  }
+  true
+}
+
+///|
+/// Certify a clause and record the certification event in the surjective coverage matrix.
+/// Certification is a real check with two parts: the clause must be structurally well-formed
+/// (`is_well_formed_clause`), and its stored conservation hash must still match a fresh
+/// recomputation over the stored literals — the latter catches a caller that mutates the
+/// literal array after `Clause::new`. Only then is the `AxiomOrigin` tag recorded under its
+/// canonical index in [0..7]; otherwise the caller's failure counter increases.
 pub fn SurjectiveAxiomProjector::certify_clause_origin(
   self : SurjectiveAxiomProjector,
   clause : Clause,
 ) -> Bool {
+  if !is_well_formed_clause(clause.lits) {
+    return false
+  }
   let expected_hash = compute_clause_conservation_hash(clause.lits)
   if clause.conservation_hash != expected_hash {
     return false
@@ -608,8 +520,7 @@ pub fn SurjectiveAxiomProjector::certify_clause_origin(
     LraFarkasAxiom(_) => 4
     LiaIntegralityCut(_) => 5
     QapDiscretePruneAxiom(_) => 6
-    CacIdealReductionAxiom(_) => 7
-    LrbOptimalLemma(_) => 8
+    OptimalBoundLemma(_) => 7
   }
   self.schema_coverage[idx] = self.schema_coverage[idx] + 1
   self.total_certified_clauses = self.total_certified_clauses + 1
@@ -618,7 +529,7 @@ pub fn SurjectiveAxiomProjector::certify_clause_origin(
 
 ///|
 /// Certified-clause count per `AxiomOrigin` category, in declaration order
-/// (`ProblemInput` first, `LrbOptimalLemma` last). This is the read side of the coverage
+/// (`ProblemInput` first, `OptimalBoundLemma` last). This is the read side of the coverage
 /// array; without it the counters were accumulated but never observable.
 pub fn SurjectiveAxiomProjector::schema_coverage_report(
   self : SurjectiveAxiomProjector,
@@ -656,7 +567,7 @@ pub fn SurjectiveAxiomProjector::project_upper_bound_clauses(
         [mk_lit(v, false)],
         true,
         1,
-        LrbOptimalLemma((ub_limit * 100.0).to_int()),
+        OptimalBoundLemma((ub_limit * optimal_lemma_bound_scale).to_int()),
       )
       let _ = self.certify_clause_origin(c)
       projected.push(c)
@@ -676,7 +587,7 @@ pub fn SurjectiveAxiomProjector::project_upper_bound_clauses(
             [mk_lit(u, false), mk_lit(v, false)],
             true,
             2,
-            LrbOptimalLemma((ub_limit * 100.0).to_int()),
+            OptimalBoundLemma((ub_limit * optimal_lemma_bound_scale).to_int()),
           )
           let _ = self.certify_clause_origin(c)
           projected.push(c)
